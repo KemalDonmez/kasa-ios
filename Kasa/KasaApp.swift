@@ -17,6 +17,7 @@ struct RootView: View {
     @ObservedObject private var toaster = Toaster.shared
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(Prefs.theme) private var theme = 0
+    @AppStorage(Prefs.palette) private var paletteRaw = "gece"
 
     var body: some View {
         ZStack {
@@ -32,6 +33,7 @@ struct RootView: View {
                     MainTabView()
                 }
             }
+            .id(paletteRaw)
             .transition(.opacity)
 
             if scenePhase != .active && store.phase == .unlocked {

@@ -220,7 +220,7 @@ struct CopyButton: View {
                 .frame(width: 38, height: 38)
                 .background(Circle().fill(done ? Color.kasaOK.opacity(0.14) : Color.kasaAccent.opacity(0.12)))
         }
-        .buttonStyle(PressableStyle())
+        .buttonStyle(.borderless)
         .accessibilityLabel("Kopyala")
     }
 }

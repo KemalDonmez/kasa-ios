@@ -46,12 +46,14 @@ struct SettingsView: View {
                     }
                 }
                 Section("Görünüm") {
-                    Picker("Tema", selection: $theme) {
+                    Picker("Mod", selection: $theme) {
                         Text("Sistem").tag(0)
                         Text("Koyu").tag(1)
                         Text("Açık").tag(2)
                     }
                     .pickerStyle(.segmented)
+                    PalettePicker()
+                        .listRowInsets(EdgeInsets(top: 10, leading: 0, bottom: 10, trailing: 0))
                 }
                 backupSection
                 Section {
@@ -382,6 +384,49 @@ struct SettingsView: View {
             return
         }
         Toaster.shared.show("\(r.added) kayıt içe aktarıldı" + (r.skipped > 0 ? ", \(r.skipped) atlandı" : "") + ". CSV dosyasını silmeyi unutmayın.")
+    }
+}
+
+// MARK: - Renk teması seçici
+
+struct PalettePicker: View {
+    @AppStorage(Prefs.palette) private var paletteRaw = "gece"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Renk teması").font(.subheadline.weight(.semibold)).padding(.horizontal, 16)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 14) {
+                    ForEach(Palette.allCases) { p in
+                        Button {
+                            Haptics.tap()
+                            Theme.set(p)
+                        } label: {
+                            VStack(spacing: 6) {
+                                ZStack {
+                                    Circle()
+                                        .fill(LinearGradient(colors: p.gradientColors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                                        .frame(width: 46, height: 46)
+                                    if paletteRaw == p.rawValue {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 16, weight: .bold))
+                                            .foregroundStyle(.white)
+                                    }
+                                }
+                                .overlay(Circle().strokeBorder(paletteRaw == p.rawValue ? Color.primary.opacity(0.5) : Color.clear, lineWidth: 2).padding(-4))
+                                Text(p.name)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(paletteRaw == p.rawValue ? Color.primary : Color.secondary)
+                            }
+                            .frame(width: 66)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 4)
+            }
+        }
     }
 }
 

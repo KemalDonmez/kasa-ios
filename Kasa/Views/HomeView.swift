@@ -1,16 +1,52 @@
 import SwiftUI
 
+// MARK: - Filtre ve sıralama
+
 enum VaultFilter: Hashable {
     case all
     case favorites
+    case twoFA
+    case weak
     case category(EntryCategory)
 
     var title: String {
         switch self {
-        case .all: return "Tüm şifreler"
+        case .all: return "Tümü"
         case .favorites: return "Favoriler"
-        case .category(let c): return c.name
+        case .twoFA: return "2FA"
+        case .weak: return "Zayıf"
+        case .category(let c): return c.shortName
         }
+    }
+}
+
+enum SortMode: String, CaseIterable, Identifiable {
+    case az, za, created, updated, category
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .az: return "A → Z"
+        case .za: return "Z → A"
+        case .created: return "Son eklenen"
+        case .updated: return "Son değişen"
+        case .category: return "Türe göre"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .az: return "arrow.down"
+        case .za: return "arrow.up"
+        case .created: return "plus.circle"
+        case .updated: return "clock.arrow.circlepath"
+        case .category: return "square.grid.2x2"
+        }
+    }
+
+    init(stored: String) {
+        if stored == "recent" { self = .updated } else { self = SortMode(rawValue: stored) ?? .az }
     }
 }
 
@@ -19,51 +55,55 @@ struct EditTarget: Identifiable {
     let entry: Entry?
 }
 
-struct EntryGroup: Identifiable {
+struct ListSection: Identifiable {
     let id: String
+    let title: String
+    var icon: String?
     var items: [Entry]
 }
 
+// MARK: - Ana ekran
+
 struct HomeView: View {
     @EnvironmentObject private var store: VaultStore
-    @AppStorage(Prefs.sort) private var sort = "az"
+    @AppStorage(Prefs.sort) private var sortRaw = "az"
     @State private var query = ""
     @State private var filter: VaultFilter = .all
     @State private var editing: EditTarget?
     @State private var showImporter = false
     @State private var pendingDelete: Entry?
+    @State private var path: [String] = []
 
+    private var sort: SortMode { SortMode(stored: sortRaw) }
     private var isBrowsing: Bool { query.isEmpty && filter == .all }
 
     var body: some View {
-        let list = filteredEntries()
-        NavigationStack {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
-                    header
-                    if store.entries.isEmpty {
-                        emptyState
-                    } else {
-                        SearchField(text: $query)
-                        if isBrowsing {
-                            summaryCard
-                            categoryGrid
-                            favoritesStrip
-                        } else {
-                            filterBar(count: list.count)
-                        }
-                        entriesSection(list)
-                    }
+        NavigationStack(path: $path) {
+            Group {
+                if store.entries.isEmpty {
+                    emptyState
+                } else {
+                    list
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .padding(.bottom, 110)
             }
-            .scrollDismissesKeyboard(.immediately)
-            .background(AppBackground())
-            .toolbar(.hidden, for: .navigationBar)
-            .overlay(alignment: .bottomTrailing) {
-                if !store.entries.isEmpty { addButton }
+            .navigationTitle(AppInfo.name)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button { store.lock() } label: {
+                        Image(systemName: "lock.fill").font(.system(size: 15, weight: .semibold))
+                    }
+                    .accessibilityLabel("Kilitle")
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { editing = EditTarget(entry: nil) } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 32, height: 32)
+                            .background(Circle().fill(LinearGradient.kasa))
+                    }
+                    .accessibilityLabel("Yeni şifre")
+                }
             }
             .navigationDestination(for: String.self) { id in
                 EntryDetailView(entryID: id)
@@ -83,368 +123,272 @@ struct HomeView: View {
         }
     }
 
-    // MARK: Üst bölüm
-
-    private var greeting: String {
-        let h = Calendar.current.component(.hour, from: Date())
-        switch h {
-        case 5..<12: return "Günaydın"
-        case 12..<18: return "İyi günler"
-        case 18..<23: return "İyi akşamlar"
-        default: return "İyi geceler"
-        }
-    }
-
-    private var header: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(greeting)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Text(AppInfo.name)
-                    .font(.system(size: 32, weight: .bold))
-            }
-            Spacer()
-            CircleIconButton(systemName: "lock.fill") { store.lock() }
-                .accessibilityLabel("Kilitle")
-            CircleIconButton(systemName: "plus", filled: true) { editing = EditTarget(entry: nil) }
-                .accessibilityLabel("Yeni şifre")
-        }
-        .padding(.top, 6)
-    }
-
-    private var summaryCard: some View {
-        let r = store.report
-        return Button {
-            store.selectedTab = .security
-        } label: {
-            ZStack(alignment: .topTrailing) {
-                LinearGradient.hero
-                Circle().fill(Color.white.opacity(0.08)).frame(width: 220, height: 220).offset(x: 70, y: -90)
-                Circle().fill(Color.white.opacity(0.06)).frame(width: 140, height: 140).offset(x: -10, y: 80)
-                HStack(spacing: 18) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label("Güvenlik puanı", systemImage: "checkmark.shield.fill")
-                            .font(.subheadline.weight(.semibold))
-                            .opacity(0.9)
-                        HStack(alignment: .firstTextBaseline, spacing: 2) {
-                            Text(r.total == 0 ? "–" : "\(r.score)")
-                                .font(.system(size: 46, weight: .bold, design: .rounded))
-                            Text("/100").font(.headline).opacity(0.7)
-                        }
-                        HStack(spacing: 6) {
-                            Pill(text: "\(store.entries.count) kayıt", icon: "key.fill")
-                            if r.weak.count > 0 { Pill(text: "\(r.weak.count) zayıf", icon: "exclamationmark.triangle.fill") }
-                            if r.reused.count > 0 { Pill(text: "\(r.reused.count) tekrar", icon: "arrow.triangle.2.circlepath") }
-                            if r.weak.isEmpty && r.reused.isEmpty { Pill(text: "\(r.with2FA) 2FA", icon: "number") }
-                        }
-                    }
-                    Spacer(minLength: 0)
-                    ZStack {
-                        ScoreRing(progress: Double(r.total == 0 ? 0 : r.score) / 100, lineWidth: 10)
-                        Image(systemName: r.score >= 80 ? "hand.thumbsup.fill" : "shield.lefthalf.filled")
-                            .font(.system(size: 26, weight: .semibold))
-                    }
-                    .frame(width: 84, height: 84)
-                }
-                .padding(20)
-            }
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity)
-            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-            .shadow(color: Color(hex: 0x3B6CF6).opacity(0.35), radius: 18, x: 0, y: 10)
-        }
-        .buttonStyle(PressableStyle())
-    }
-
-    // MARK: Kategoriler
-
-    private struct Tile: Identifiable {
-        let id: String
-        let title: String
-        let icon: String
-        let colors: [Color]
-        let count: Int
-        let filter: VaultFilter
-    }
-
-    private var tiles: [Tile] {
-        var counts: [EntryCategory: Int] = [:]
-        var favs = 0
-        for e in store.entries {
-            counts[e.category, default: 0] += 1
-            if e.favorite { favs += 1 }
-        }
-        var result: [Tile] = []
-        if favs > 0 {
-            result.append(Tile(id: "fav", title: "Favoriler", icon: "star.fill",
-                               colors: [Color(hex: 0xFFC53D), Color(hex: 0xF59E0B)], count: favs, filter: .favorites))
-        }
-        for c in EntryCategory.allCases {
-            if let n = counts[c] {
-                result.append(Tile(id: c.rawValue, title: c.shortName, icon: c.icon, colors: c.colors, count: n, filter: .category(c)))
-            }
-        }
-        return result
-    }
-
-    private var categoryGrid: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader("Kategoriler")
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
-                ForEach(tiles) { t in
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) { filter = t.filter }
-                    } label: {
-                        HStack(spacing: 12) {
-                            IconBadge(systemName: t.icon, colors: t.colors, size: 38)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(t.title)
-                                    .font(.subheadline.weight(.semibold))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.85)
-                                Text("\(t.count) kayıt").font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .card(padding: 12, radius: 18)
-                    }
-                    .buttonStyle(PressableStyle())
-                    .foregroundStyle(.primary)
-                }
-            }
-        }
-    }
-
-    // MARK: Favoriler şeridi
-
-    @ViewBuilder
-    private var favoritesStrip: some View {
-        let favs = store.entries.filter(\.favorite).sorted { $0.updatedAt > $1.updatedAt }
-        if !favs.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionHeader("Hızlı erişim")
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
-                        ForEach(favs.prefix(12)) { e in
-                            NavigationLink(value: e.id) {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    HStack {
-                                        BrandAvatar(entry: e, size: 40)
-                                        Spacer()
-                                        Image(systemName: "star.fill").font(.caption).foregroundStyle(Color.kasaWarn)
-                                    }
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(e.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-                                        Text(e.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                    }
-                                }
-                                .frame(width: 140, alignment: .leading)
-                                .card(padding: 14, radius: 18)
-                            }
-                            .buttonStyle(PressableStyle())
-                            .foregroundStyle(.primary)
-                            .contextMenu { contextMenu(e) }
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 2)
-                }
-                .padding(.horizontal, -16)
-            }
-        }
-    }
-
     // MARK: Liste
 
-    private func filterBar(count: Int) -> some View {
-        HStack(spacing: 10) {
-            if filter != .all {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) { filter = .all }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chevron.left").font(.caption.weight(.bold))
-                        Text(filter.title).font(.subheadline.weight(.semibold))
-                        Image(systemName: "xmark").font(.caption2.weight(.bold)).opacity(0.6)
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(height: 34)
-                    .foregroundStyle(.white)
-                    .background(Capsule().fill(LinearGradient.kasa))
+    private var list: some View {
+        let entries = filteredEntries()
+        let sections = buildSections(entries)
+        let favs = isBrowsing ? store.entries.filter(\.favorite).sorted { $0.updatedAt > $1.updatedAt } : []
+        return List {
+            if isBrowsing {
+                Section {
+                    SummaryCard(report: store.report, total: store.entries.count) { store.selectedTab = .security }
+                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 }
-                .buttonStyle(PressableStyle())
             }
-            Text("\(count) sonuç").font(.subheadline).foregroundStyle(.secondary)
-            Spacer()
+
+            Section {
+                controls(resultCount: entries.count)
+                    .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }
+
+            if !favs.isEmpty {
+                Section {
+                    FavoritesStrip(entries: Array(favs.prefix(15))) { id in path.append(id) }
+                        .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                } header: {
+                    sectionHeader("Hızlı erişim", icon: "star.fill")
+                }
+            }
+
+            if sections.isEmpty {
+                Section {
+                    VStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass").font(.system(size: 34)).foregroundStyle(.tertiary)
+                        Text(query.isEmpty ? "Bu filtrede kayıt yok" : "“\(query)” için sonuç bulunamadı")
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 30)
+                    .listRowBackground(Color.clear)
+                }
+            } else {
+                ForEach(sections) { section in
+                    Section {
+                        ForEach(section.items) { e in
+                            row(e)
+                        }
+                    } header: {
+                        sectionHeader(section.title, icon: section.icon)
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(AppBackground())
+        .scrollDismissesKeyboard(.immediately)
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Ada göre ara")
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled(true)
+    }
+
+    private func sectionHeader(_ title: String, icon: String?) -> some View {
+        HStack(spacing: 6) {
+            if let icon { Image(systemName: icon).font(.caption.weight(.bold)) }
+            Text(title)
+        }
+        .font(.subheadline.weight(.bold))
+        .foregroundStyle(.secondary)
+        .textCase(nil)
+    }
+
+    private func row(_ e: Entry) -> some View {
+        NavigationLink(value: e.id) {
+            EntryRowView(entry: e).equatable()
+        }
+        .listRowBackground(Color.surface)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) { pendingDelete = e } label: { Label("Sil", systemImage: "trash") }
+            if !e.username.isEmpty {
+                Button {
+                    Clipboard.copy(e.username)
+                    Toaster.shared.show("Kullanıcı adı kopyalandı")
+                } label: { Label("Kullanıcı", systemImage: "person.fill") }
+                .tint(Color(hex: 0x64748B))
+            }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button { store.toggleFavorite(e.id) } label: {
+                Label(e.favorite ? "Çıkar" : "Favori", systemImage: e.favorite ? "star.slash.fill" : "star.fill")
+            }
+            .tint(.kasaWarn)
+        }
+        .contextMenu {
+            if !e.username.isEmpty {
+                Button { Clipboard.copy(e.username); Toaster.shared.show("Kullanıcı adı kopyalandı") } label: {
+                    Label("Kullanıcı adını kopyala", systemImage: "person")
+                }
+            }
+            if !e.password.isEmpty {
+                Button { Clipboard.copy(e.password); Toaster.shared.show("Şifre kopyalandı") } label: {
+                    Label("Şifreyi kopyala", systemImage: "key")
+                }
+            }
+            if let url = URLHelper.openable(e.url) {
+                Link(destination: url) { Label("Siteyi aç", systemImage: "safari") }
+            }
+            Button { store.toggleFavorite(e.id) } label: {
+                Label(e.favorite ? "Favorilerden çıkar" : "Favorilere ekle", systemImage: e.favorite ? "star.slash" : "star")
+            }
+            Button { editing = EditTarget(entry: e) } label: { Label("Düzenle", systemImage: "pencil") }
+            Button(role: .destructive) { pendingDelete = e } label: { Label("Sil", systemImage: "trash") }
         }
     }
+
+    // MARK: Filtre ve sıralama kontrolleri
+
+    private func controls(resultCount: Int) -> some View {
+        let counts = filterCounts()
+        let weakCount = store.report.weak.count
+        return VStack(alignment: .leading, spacing: 10) {
+            chipScroller {
+                ForEach(SortMode.allCases) { m in
+                    Chip(title: m.title, icon: m.icon, selected: sort == m) {
+                        Haptics.tap()
+                        withAnimation(.easeInOut(duration: 0.2)) { sortRaw = m.rawValue }
+                    }
+                }
+            }
+            chipScroller {
+                Chip(title: "Tümü", count: store.entries.count, selected: filter == .all) { setFilter(.all) }
+                if counts.fav > 0 {
+                    Chip(title: "Favoriler", icon: "star.fill", count: counts.fav, selected: filter == .favorites,
+                         tint: .kasaWarn) { setFilter(.favorites) }
+                }
+                if counts.twoFA > 0 {
+                    Chip(title: "2FA", icon: "number", count: counts.twoFA, selected: filter == .twoFA) { setFilter(.twoFA) }
+                }
+                if weakCount > 0 {
+                    Chip(title: "Zayıf", icon: "exclamationmark.triangle.fill", count: weakCount,
+                         selected: filter == .weak, tint: .kasaDanger) { setFilter(.weak) }
+                }
+                ForEach(EntryCategory.allCases) { c in
+                    if let n = counts.categories[c] {
+                        Chip(title: c.shortName, icon: c.icon, count: n, selected: filter == .category(c), tint: c.color) {
+                            setFilter(.category(c))
+                        }
+                    }
+                }
+            }
+            if !isBrowsing {
+                Text("\(resultCount) sonuç")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 20)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func chipScroller<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) { content() }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 1)
+        }
+    }
+
+    private func setFilter(_ f: VaultFilter) {
+        Haptics.tap()
+        withAnimation(.easeInOut(duration: 0.2)) { filter = (filter == f && f != .all) ? .all : f }
+    }
+
+    private func filterCounts() -> (fav: Int, twoFA: Int, categories: [EntryCategory: Int]) {
+        var fav = 0, twoFA = 0
+        var cats: [EntryCategory: Int] = [:]
+        for e in store.entries {
+            if e.favorite { fav += 1 }
+            if !e.totp.isEmpty { twoFA += 1 }
+            cats[e.category, default: 0] += 1
+        }
+        return (fav, twoFA, cats)
+    }
+
+    // MARK: Veri
 
     private func filteredEntries() -> [Entry] {
         let locale = Locale(identifier: "tr_TR")
         let q = query.trimmingCharacters(in: .whitespaces).lowercased(with: locale)
-        var list = store.entries.filter { e in
+        let weakIDs: Set<String> = filter == .weak ? Set(store.report.weak.map(\.id)) : []
+        return store.entries.filter { e in
             switch filter {
             case .all: break
             case .favorites: if !e.favorite { return false }
+            case .twoFA: if e.totp.isEmpty { return false }
+            case .weak: if !weakIDs.contains(e.id) { return false }
             case .category(let c): if e.category != c { return false }
             }
             if q.isEmpty { return true }
+            // Öncelik başlıkta (ada göre); kullanıcı adı ve sitede de aranır
             return e.title.lowercased(with: locale).contains(q)
                 || e.username.lowercased(with: locale).contains(q)
                 || e.url.lowercased(with: locale).contains(q)
-                || e.notes.lowercased(with: locale).contains(q)
         }
-        if sort == "recent" {
-            list.sort { $0.updatedAt > $1.updatedAt }
-        } else {
-            list.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        }
-        return list
     }
 
-    private func groups(_ list: [Entry]) -> [EntryGroup] {
-        guard sort == "az" else { return [EntryGroup(id: "Son değiştirilenler", items: list)] }
-        var result: [EntryGroup] = []
-        for e in list {
-            var k = e.initial
-            if k.rangeOfCharacter(from: .letters) == nil { k = "#" }
-            if let last = result.indices.last, result[last].id == k {
-                result[last].items.append(e)
-            } else if let i = result.firstIndex(where: { $0.id == k }) {
-                result[i].items.append(e)
-            } else {
-                result.append(EntryGroup(id: k, items: [e]))
-            }
-        }
-        return result
-    }
+    private func buildSections(_ list: [Entry]) -> [ListSection] {
+        guard !list.isEmpty else { return [] }
+        let byTitle: (Entry, Entry) -> Bool = { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
 
-    @ViewBuilder
-    private func entriesSection(_ list: [Entry]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if isBrowsing {
-                SectionHeader("Tüm şifreler") { sortMenu }
+        if !query.isEmpty {
+            let locale = Locale(identifier: "tr_TR")
+            let q = query.trimmingCharacters(in: .whitespaces).lowercased(with: locale)
+            let sorted = list.sorted { a, b in
+                let ap = a.title.lowercased(with: locale).hasPrefix(q)
+                let bp = b.title.lowercased(with: locale).hasPrefix(q)
+                if ap != bp { return ap }
+                return byTitle(a, b)
             }
-            if list.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass").font(.system(size: 34)).foregroundStyle(.tertiary)
-                    Text(query.isEmpty ? "Bu filtrede kayıt yok" : "“\(query)” için sonuç bulunamadı")
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 40)
-            } else {
-                ForEach(groups(list)) { group in
-                    VStack(alignment: .leading, spacing: 8) {
-                        if sort == "az" && query.isEmpty {
-                            Text(group.id)
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(.secondary)
-                                .padding(.leading, 6)
-                        }
-                        VStack(spacing: 0) {
-                            ForEach(Array(group.items.enumerated()), id: \.element.id) { item in
-                                if item.offset > 0 { Divider().padding(.leading, 70) }
-                                row(item.element)
-                            }
-                        }
-                        .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Color.surface))
-                        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(Color.hairline))
-                    }
+            return [ListSection(id: "results", title: "Sonuçlar", icon: "magnifyingglass", items: sorted)]
+        }
+
+        switch sort {
+        case .az, .za:
+            let sorted = sort == .az ? list.sorted(by: byTitle) : list.sorted { byTitle($1, $0) }
+            var result: [ListSection] = []
+            for e in sorted {
+                var k = e.initial
+                if k.rangeOfCharacter(from: .letters) == nil { k = "#" }
+                if let last = result.indices.last, result[last].id == k {
+                    result[last].items.append(e)
+                } else {
+                    result.append(ListSection(id: k, title: k, icon: nil, items: [e]))
                 }
             }
-        }
-    }
-
-    private var sortMenu: some View {
-        Menu {
-            Picker("Sıralama", selection: $sort) {
-                Label("A → Z", systemImage: "textformat").tag("az")
-                Label("Son değiştirilen", systemImage: "clock").tag("recent")
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Text(sort == "az" ? "A → Z" : "En yeni")
-                Image(systemName: "chevron.down").font(.caption2.weight(.bold))
-            }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(Color.kasaAccent)
-        }
-    }
-
-    private func row(_ e: Entry) -> some View {
-        HStack(spacing: 12) {
-            NavigationLink(value: e.id) {
-                HStack(spacing: 14) {
-                    BrandAvatar(entry: e)
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            Text(e.title).font(.body.weight(.semibold)).lineLimit(1)
-                            if e.favorite {
-                                Image(systemName: "star.fill").font(.system(size: 10)).foregroundStyle(Color.kasaWarn)
-                            }
-                            if !e.totp.isEmpty {
-                                Text("2FA")
-                                    .font(.system(size: 9.5, weight: .heavy))
-                                    .foregroundStyle(Color.kasaAccent)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 2)
-                                    .background(Capsule().fill(Color.kasaAccent.opacity(0.14)))
-                            }
-                        }
-                        Text(e.subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
+            return result
+        case .created, .updated:
+            let useCreated = sort == .created
+            let sorted = list.sorted { (useCreated ? $0.createdAt : $0.updatedAt) > (useCreated ? $1.createdAt : $1.updatedAt) }
+            let cal = Calendar.current
+            let now = Date()
+            var result: [ListSection] = []
+            for e in sorted {
+                let date = useCreated ? e.createdDate : e.updatedDate
+                let b = DateBucket.of(date, now: now, calendar: cal)
+                let id = "b\(b.rank)"
+                if let last = result.indices.last, result[last].id == id {
+                    result[last].items.append(e)
+                } else {
+                    result.append(ListSection(id: id, title: b.title, icon: "calendar", items: [e]))
                 }
-                .contentShape(Rectangle())
             }
-            .buttonStyle(PressableStyle())
-            .foregroundStyle(.primary)
-            if !e.password.isEmpty {
-                CopyButton(text: e.password, message: "\(e.title) şifresi kopyalandı")
+            return result
+        case .category:
+            var result: [ListSection] = []
+            for c in EntryCategory.allCases {
+                let items = list.filter { $0.category == c }.sorted(by: byTitle)
+                if !items.isEmpty { result.append(ListSection(id: c.rawValue, title: c.name, icon: c.icon, items: items)) }
             }
+            return result
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .contextMenu { contextMenu(e) }
-    }
-
-    @ViewBuilder
-    private func contextMenu(_ e: Entry) -> some View {
-        if !e.username.isEmpty {
-            Button { Clipboard.copy(e.username); Toaster.shared.show("Kullanıcı adı kopyalandı") } label: {
-                Label("Kullanıcı adını kopyala", systemImage: "person")
-            }
-        }
-        if !e.password.isEmpty {
-            Button { Clipboard.copy(e.password); Toaster.shared.show("Şifre kopyalandı") } label: {
-                Label("Şifreyi kopyala", systemImage: "key")
-            }
-        }
-        if let url = URLHelper.openable(e.url) {
-            Link(destination: url) { Label("Siteyi aç", systemImage: "safari") }
-        }
-        Button { store.toggleFavorite(e.id) } label: {
-            Label(e.favorite ? "Favorilerden çıkar" : "Favorilere ekle", systemImage: e.favorite ? "star.slash" : "star")
-        }
-        Button { editing = EditTarget(entry: e) } label: { Label("Düzenle", systemImage: "pencil") }
-        Button(role: .destructive) { pendingDelete = e } label: { Label("Sil", systemImage: "trash") }
-    }
-
-    private var addButton: some View {
-        Button { editing = EditTarget(entry: nil) } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 26, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 62, height: 62)
-                .background(Circle().fill(LinearGradient.kasa))
-                .shadow(color: Color.kasaAccent.opacity(0.45), radius: 14, x: 0, y: 8)
-        }
-        .buttonStyle(PressableStyle())
-        .padding(.trailing, 20)
-        .padding(.bottom, 16)
-        .accessibilityLabel("Yeni şifre")
     }
 
     private var defaultCategory: EntryCategory {
@@ -455,27 +399,30 @@ struct HomeView: View {
     // MARK: Boş durum
 
     private var emptyState: some View {
-        VStack(spacing: 18) {
-            ZStack {
-                Circle()
-                    .fill(RadialGradient(colors: [Color.kasaAccent.opacity(0.35), .clear], center: .center, startRadius: 5, endRadius: 110))
-                    .frame(width: 220, height: 220)
-                IconBadge(systemName: "key.horizontal.fill", colors: [Color(hex: 0x7C5CFF), Color(hex: 0x3B82F6)], size: 96)
+        ScrollView {
+            VStack(spacing: 18) {
+                ZStack {
+                    Circle()
+                        .fill(RadialGradient(colors: [Color.kasaAccent.opacity(0.35), .clear], center: .center, startRadius: 5, endRadius: 110))
+                        .frame(width: 220, height: 220)
+                    IconBadge(systemName: "key.horizontal.fill", colors: Theme.palette.gradientColors, size: 96)
+                }
+                .frame(height: 180)
+                Text("İlk şifrenizi ekleyin").font(.title2.weight(.bold))
+                Text("Tüm hesaplarınızın şifrelerini burada saklayın. Hepsi bu iPhone'da, şifrelenmiş olarak durur ve internete gönderilmez.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 12)
+                Button { editing = EditTarget(entry: nil) } label: { Label("Şifre ekle", systemImage: "plus") }
+                    .buttonStyle(PrimaryButtonStyle())
+                Button { showImporter = true } label: { Label("Başka uygulamadan aktar (CSV)", systemImage: "square.and.arrow.down") }
+                    .buttonStyle(SecondaryButtonStyle())
             }
-            .frame(height: 180)
-            Text("İlk şifrenizi ekleyin").font(.title2.weight(.bold))
-            Text("Tüm hesaplarınızın şifrelerini burada saklayın. Hepsi bu iPhone'da, şifrelenmiş olarak durur ve internete gönderilmez.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 12)
-            Button { editing = EditTarget(entry: nil) } label: { Label("Şifre ekle", systemImage: "plus") }
-                .buttonStyle(PrimaryButtonStyle())
-            Button { showImporter = true } label: { Label("Başka uygulamadan aktar (CSV)", systemImage: "square.and.arrow.down") }
-                .buttonStyle(SecondaryButtonStyle())
+            .padding(.horizontal, 20)
+            .padding(.top, 10)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 20)
+        .background(AppBackground())
     }
 
     private func importCSV(_ url: URL) {
@@ -489,5 +436,172 @@ struct HomeView: View {
             return
         }
         Toaster.shared.show("\(result.added) kayıt içe aktarıldı" + (result.skipped > 0 ? ", \(result.skipped) atlandı" : ""))
+    }
+}
+
+enum DateBucket {
+    static func of(_ d: Date, now: Date, calendar cal: Calendar) -> (rank: Int, title: String) {
+        if cal.isDateInToday(d) { return (0, "Bugün") }
+        if cal.isDateInYesterday(d) { return (1, "Dün") }
+        let days = cal.dateComponents([.day], from: d, to: now).day ?? 0
+        if days < 7 { return (2, "Bu hafta") }
+        if days < 31 { return (3, "Bu ay") }
+        if days < 365 { return (4, "Bu yıl") }
+        return (5, "Daha eski")
+    }
+}
+
+// MARK: - Satır ve kartlar
+
+/// Liste satırı. Equatable olduğu için yalnızca kayıt değiştiğinde yeniden çizilir.
+struct EntryRowView: View, Equatable {
+    let entry: Entry
+
+    static func == (lhs: EntryRowView, rhs: EntryRowView) -> Bool { lhs.entry == rhs.entry }
+
+    var body: some View {
+        HStack(spacing: 13) {
+            BrandAvatar(entry: entry)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(entry.title).font(.body.weight(.semibold)).lineLimit(1)
+                    if entry.favorite {
+                        Image(systemName: "star.fill").font(.system(size: 10)).foregroundStyle(Color.kasaWarn)
+                    }
+                    if !entry.totp.isEmpty {
+                        Text("2FA")
+                            .font(.system(size: 9.5, weight: .heavy))
+                            .foregroundStyle(Color.kasaAccent)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.kasaAccent.opacity(0.14)))
+                    }
+                }
+                Text(entry.subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            if !entry.password.isEmpty {
+                CopyButton(text: entry.password, message: "\(entry.title) şifresi kopyalandı")
+            }
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+struct Chip: View {
+    let title: String
+    var icon: String?
+    var count: Int?
+    let selected: Bool
+    var tint: Color?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let icon {
+                    Image(systemName: icon)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(selected ? Color.white : (tint ?? Color.secondary))
+                }
+                Text(title).font(.subheadline.weight(.semibold))
+                if let count {
+                    Text("\(count)").font(.caption.weight(.bold)).opacity(0.65)
+                }
+            }
+            .padding(.horizontal, 13)
+            .frame(height: 34)
+            .foregroundStyle(selected ? Color.white : Color.primary)
+            .background(
+                Capsule().fill(selected ? AnyShapeStyle(LinearGradient.kasa) : AnyShapeStyle(Color.surface))
+            )
+            .overlay(Capsule().strokeBorder(selected ? Color.clear : Color.hairline))
+        }
+        .buttonStyle(.borderless)
+    }
+}
+
+struct SummaryCard: View {
+    let report: VaultStore.Report
+    let total: Int
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 18) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label("Güvenlik puanı", systemImage: "checkmark.shield.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .opacity(0.9)
+                    HStack(alignment: .firstTextBaseline, spacing: 2) {
+                        Text(report.total == 0 ? "–" : "\(report.score)")
+                            .font(.system(size: 44, weight: .bold, design: .rounded))
+                        Text("/100").font(.headline).opacity(0.7)
+                    }
+                    HStack(spacing: 6) {
+                        Pill(text: "\(total) kayıt", icon: "key.fill")
+                        if report.weak.count > 0 { Pill(text: "\(report.weak.count) zayıf", icon: "exclamationmark.triangle.fill") }
+                        if report.reused.count > 0 { Pill(text: "\(report.reused.count) tekrar", icon: "arrow.triangle.2.circlepath") }
+                        if report.weak.isEmpty && report.reused.isEmpty { Pill(text: "\(report.with2FA) 2FA", icon: "number") }
+                    }
+                }
+                Spacer(minLength: 0)
+                ZStack {
+                    ScoreRing(progress: Double(report.total == 0 ? 0 : report.score) / 100, lineWidth: 10)
+                    Image(systemName: report.score >= 80 ? "hand.thumbsup.fill" : "shield.lefthalf.filled")
+                        .font(.system(size: 26, weight: .semibold))
+                }
+                .frame(width: 84, height: 84)
+            }
+            .padding(20)
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .background(CardArt())
+            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        }
+        .buttonStyle(PressableStyle())
+    }
+}
+
+/// Kart arka planı; tek seferde çizilip önbelleğe alınır (kaydırmada akıcılık için)
+struct CardArt: View {
+    var body: some View {
+        ZStack {
+            LinearGradient.hero
+            Circle().fill(Color.white.opacity(0.08)).frame(width: 240, height: 240).offset(x: 140, y: -90)
+            Circle().fill(Color.white.opacity(0.06)).frame(width: 160, height: 160).offset(x: -120, y: 80)
+        }
+        .drawingGroup()
+    }
+}
+
+struct FavoritesStrip: View {
+    let entries: [Entry]
+    let open: (String) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                ForEach(entries) { e in
+                    Button { open(e.id) } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            BrandAvatar(entry: e, size: 40)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(e.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                                Text(e.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                        .frame(width: 128, alignment: .leading)
+                        .padding(14)
+                        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.surface))
+                        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.hairline))
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.primary)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 2)
+        }
     }
 }

@@ -26,24 +26,75 @@ extension Color {
     }
 
     // Zemin ve yüzeyler
-    static let appBackground = Color.dynamic(light: 0xF2F3F8, dark: 0x08080E)
-    static let surface = Color.dynamic(light: 0xFFFFFF, dark: 0x13131C)
-    static let surfaceRaised = Color.dynamic(light: 0xF4F5FA, dark: 0x1B1B27)
-    static let hairline = Color.dynamic(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.06, darkAlpha: 0.07)
+    static let appBackground = Color.dynamic(light: 0xF3F5FA, dark: 0x070A12)
+    static let surface = Color.dynamic(light: 0xFFFFFF, dark: 0x10151F)
+    static let surfaceRaised = Color.dynamic(light: 0xF1F4F9, dark: 0x182033)
+    static let hairline = Color.dynamic(light: 0x0B1220, dark: 0xFFFFFF, lightAlpha: 0.07, darkAlpha: 0.07)
 
-    // Marka renkleri
-    static let kasaAccent = Color(hex: 0x6C5CFF)
-    static let kasaAccent2 = Color(hex: 0x3B82F6)
-    static let kasaDanger = Color(hex: 0xFF4D5E)
-    static let kasaOK = Color(hex: 0x22C55E)
+    // Seçili temaya göre değişen vurgu renkleri
+    static var kasaAccent: Color { Theme.palette.accent }
+    static var kasaAccent2: Color { Theme.palette.accent2 }
+
+    // Sabit durum renkleri
+    static let kasaDanger = Color(hex: 0xF43F5E)
+    static let kasaOK = Color(hex: 0x10B981)
     static let kasaWarn = Color(hex: 0xF59E0B)
 }
 
+/// Uygulamanın renk temaları
+enum Palette: String, CaseIterable, Identifiable {
+    case gece, mor, okyanus, zumrut, gunbatimi, grafit
+
+    var id: String { rawValue }
+
+    var name: String {
+        switch self {
+        case .gece: return "Gece Mavisi"
+        case .mor: return "Mor"
+        case .okyanus: return "Okyanus"
+        case .zumrut: return "Zümrüt"
+        case .gunbatimi: return "Gün Batımı"
+        case .grafit: return "Grafit"
+        }
+    }
+
+    private var hexes: (accent: UInt32, accent2: UInt32, grad: [UInt32], hero: [UInt32]) {
+        switch self {
+        case .gece: return (0x4F6BF5, 0x0EA5E9, [0x4F46E5, 0x0EA5E9], [0x1E1B5E, 0x4338CA, 0x0EA5E9])
+        case .mor: return (0x6C5CFF, 0x3B82F6, [0x7C5CFF, 0x3B82F6], [0x4C2FD6, 0x3B6CF6, 0x1FA2E8])
+        case .okyanus: return (0x0EA5C4, 0x22D3EE, [0x0891B2, 0x22D3EE], [0x0C4A5E, 0x0891B2, 0x22D3EE])
+        case .zumrut: return (0x10A37F, 0x34D399, [0x059669, 0x34D399], [0x064E3B, 0x059669, 0x34D399])
+        case .gunbatimi: return (0xF0567A, 0xF97316, [0xEC4899, 0xF97316], [0x831843, 0xDB2777, 0xF97316])
+        case .grafit: return (0x6B7A90, 0x94A3B8, [0x475569, 0x1E293B], [0x0F172A, 0x334155, 0x64748B])
+        }
+    }
+
+    var accent: Color { Color(hex: hexes.accent) }
+    var accent2: Color { Color(hex: hexes.accent2) }
+    var gradientColors: [Color] { hexes.grad.map { Color(hex: $0) } }
+    var heroColors: [Color] { hexes.hero.map { Color(hex: $0) } }
+}
+
+/// Seçili tema. Uygulama açılırken ve tema değiştiğinde güncellenir.
+enum Theme {
+    static var palette: Palette = Palette(rawValue: UserDefaults.standard.string(forKey: Prefs.palette) ?? "") ?? .gece {
+        didSet {
+            gradient = LinearGradient(colors: palette.gradientColors, startPoint: .topLeading, endPoint: .bottomTrailing)
+            hero = LinearGradient(colors: palette.heroColors, startPoint: .topLeading, endPoint: .bottomTrailing)
+        }
+    }
+    static var gradient = LinearGradient(colors: palette.gradientColors, startPoint: .topLeading, endPoint: .bottomTrailing)
+    static var hero = LinearGradient(colors: palette.heroColors, startPoint: .topLeading, endPoint: .bottomTrailing)
+
+    static func set(_ p: Palette) {
+        palette = p
+        UserDefaults.standard.set(p.rawValue, forKey: Prefs.palette)
+    }
+}
+
 extension LinearGradient {
-    static let kasa = LinearGradient(colors: [Color(hex: 0x7C5CFF), Color(hex: 0x3B82F6)],
-                                     startPoint: .topLeading, endPoint: .bottomTrailing)
-    static let hero = LinearGradient(colors: [Color(hex: 0x5B3DF5), Color(hex: 0x3B6CF6), Color(hex: 0x1FA2E8)],
-                                     startPoint: .topLeading, endPoint: .bottomTrailing)
+    static var kasa: LinearGradient { Theme.gradient }
+    static var hero: LinearGradient { Theme.hero }
 }
 
 /// Kart görünümü
@@ -70,8 +121,8 @@ struct AppBackground: View {
     var body: some View {
         ZStack(alignment: .top) {
             Color.appBackground
-            LinearGradient(colors: [Color.kasaAccent.opacity(0.16), .clear], startPoint: .top, endPoint: .bottom)
-                .frame(height: 320)
+            LinearGradient(colors: [Color.kasaAccent.opacity(0.14), .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: 300)
         }
         .ignoresSafeArea()
     }

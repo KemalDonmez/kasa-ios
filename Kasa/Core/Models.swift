@@ -235,6 +235,7 @@ struct BackupPayload: Codable {
 /// Hassas olmayan tercihler (UserDefaults)
 enum Prefs {
     static let theme = "pref.theme"                 // 0 sistem, 1 koyu, 2 açık
+    static let palette = "pref.palette"             // renk teması
     static let legacyBiometrics = "pref.biometrics" // eski sürüm
     static let deviceUnlock = "pref.deviceUnlock"   // Face ID / iPhone parolası ile açma
     static let autoLock = "pref.autoLock"           // saniye; 0 = hemen, -1 = asla
@@ -252,6 +253,7 @@ enum Prefs {
     static func register() {
         UserDefaults.standard.register(defaults: [
             theme: 0,
+            palette: "gece",
             legacyBiometrics: false,
             deviceUnlock: false,
             autoLock: 60,
