@@ -1,0 +1,68 @@
+name: iPhone uygulamasını derle
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Kodu al
+        uses: actions/checkout@v4
+
+      - name: Xcode sürümünü göster
+        run: xcodebuild -version
+
+      - name: XcodeGen kur
+        run: brew install xcodegen
+
+      - name: Xcode projesini oluştur
+        run: xcodegen generate
+
+      - name: Derle
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Kasa.xcodeproj \
+            -target Kasa \
+            -configuration Release \
+            -sdk iphoneos \
+            SYMROOT="$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build.log
+
+      - name: Hataları özetle
+        if: failure()
+        run: |
+          echo "## Derleme hataları" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -E "error:" build.log | sort -u | head -60 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Derleme günlüğünü yükle
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: derleme-gunlugu
+          path: build.log
+
+      - name: IPA dosyasını hazırla
+        run: |
+          mkdir -p Payload
+          cp -R build/Release-iphoneos/Kasa.app Payload/
+          zip -qry Kasa.ipa Payload
+          ls -la Kasa.ipa
+          echo "## ✅ Kasa.ipa hazır" >> "$GITHUB_STEP_SUMMARY"
+          echo "Sayfanın altındaki **Artifacts** bölümünden **Kasa-ipa** dosyasını indirin." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: IPA dosyasını yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kasa-ipa
+          path: Kasa.ipa
+          retention-days: 30
