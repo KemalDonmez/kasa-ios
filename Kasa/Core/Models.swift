@@ -14,6 +14,7 @@ enum EntryCategory: String, Codable, CaseIterable, Identifiable, Hashable {
     case isler = "is"
     case alisveris
     case eglence
+    case oyun
     case cihaz
     case diger
 
@@ -27,7 +28,8 @@ enum EntryCategory: String, Codable, CaseIterable, Identifiable, Hashable {
         case .finans: return "Banka & Finans"
         case .isler: return "İş"
         case .alisveris: return "Alışveriş"
-        case .eglence: return "Eğlence & Oyun"
+        case .eglence: return "Eğlence"
+        case .oyun: return "Oyun"
         case .cihaz: return "Wi-Fi & Cihaz"
         case .diger: return "Diğer"
         }
@@ -36,7 +38,6 @@ enum EntryCategory: String, Codable, CaseIterable, Identifiable, Hashable {
     var shortName: String {
         switch self {
         case .finans: return "Finans"
-        case .eglence: return "Eğlence"
         case .cihaz: return "Wi-Fi & Cihaz"
         default: return name
         }
@@ -51,6 +52,7 @@ enum EntryCategory: String, Codable, CaseIterable, Identifiable, Hashable {
         case .isler: return "briefcase.fill"
         case .alisveris: return "bag.fill"
         case .eglence: return "play.rectangle.fill"
+        case .oyun: return "gamecontroller.fill"
         case .cihaz: return "wifi"
         case .diger: return "square.grid.2x2.fill"
         }
@@ -65,6 +67,7 @@ enum EntryCategory: String, Codable, CaseIterable, Identifiable, Hashable {
         case .isler: return [Color(hex: 0xFFB648), Color(hex: 0xF08A1C)]
         case .alisveris: return [Color(hex: 0xFF8A50), Color(hex: 0xF25A22)]
         case .eglence: return [Color(hex: 0xC77DFF), Color(hex: 0x9B4DF0)]
+        case .oyun: return [Color(hex: 0x84CC16), Color(hex: 0x3F8F0A)]
         case .cihaz: return [Color(hex: 0x33D1E6), Color(hex: 0x119DB8)]
         case .diger: return [Color(hex: 0x9A9AB0), Color(hex: 0x6E6E86)]
         }
@@ -236,6 +239,8 @@ struct BackupPayload: Codable {
 enum Prefs {
     static let theme = "pref.theme"                 // 0 sistem, 1 koyu, 2 açık
     static let palette = "pref.palette"             // renk teması
+    static let siteIcons = "pref.siteIcons"         // site simgelerini indir
+    static let migratedGames = "migrate.oyun.v1"
     static let legacyBiometrics = "pref.biometrics" // eski sürüm
     static let deviceUnlock = "pref.deviceUnlock"   // Face ID / iPhone parolası ile açma
     static let autoLock = "pref.autoLock"           // saniye; 0 = hemen, -1 = asla
@@ -254,6 +259,8 @@ enum Prefs {
         UserDefaults.standard.register(defaults: [
             theme: 0,
             palette: "gece",
+            siteIcons: true,
+            migratedGames: false,
             legacyBiometrics: false,
             deviceUnlock: false,
             autoLock: 60,

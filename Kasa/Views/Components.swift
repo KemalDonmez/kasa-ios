@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Marka ve simgeler
 
@@ -20,22 +21,55 @@ struct LogoView: View {
     }
 }
 
-/// Servis rengine göre renklenen kayıt simgesi
+/// Kayıt simgesi: sitenin logosu varsa onu, yoksa servis rengiyle baş harfi gösterir
 struct BrandAvatar: View {
     let entry: Entry
     var size: CGFloat = 44
+    @State private var icon: UIImage?
+    @AppStorage(Prefs.siteIcons) private var siteIcons = true
+
+    init(entry: Entry, size: CGFloat = 44) {
+        self.entry = entry
+        self.size = size
+        _icon = State(initialValue: SiteIconStore.shared.cachedImage(for: entry))
+    }
+
+    private var iconKey: String { IconDomain.cacheKey(for: entry) ?? "" }
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-                .fill(BrandPalette.gradient(for: entry))
-            RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
-                .fill(LinearGradient(colors: [.white.opacity(0.22), .clear], startPoint: .top, endPoint: .center))
-            Text(entry.initial)
-                .font(.system(size: size * 0.44, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+            if siteIcons, let icon {
+                RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+                    .fill(Color.white)
+                Image(uiImage: icon)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .padding(size * 0.12)
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+                RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+                    .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
+            } else {
+                RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+                    .fill(BrandPalette.gradient(for: entry))
+                RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+                    .fill(LinearGradient(colors: [.white.opacity(0.22), .clear], startPoint: .top, endPoint: .center))
+                Text(entry.initial)
+                    .font(.system(size: size * 0.44, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+            }
         }
         .frame(width: size, height: size)
+        .task(id: iconKey) {
+            guard siteIcons, !iconKey.isEmpty else { icon = nil; return }
+            if let hit = SiteIconStore.shared.cached(key: iconKey) { icon = hit; return }
+            icon = nil
+            // Yazarken her harfte istek atmamak için kısa bekleme
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            if Task.isCancelled { return }
+            let img = await SiteIconStore.shared.image(for: entry)
+            if !Task.isCancelled { withAnimation(.easeOut(duration: 0.2)) { icon = img } }
+        }
     }
 }
 

@@ -103,7 +103,7 @@ struct SetupView: View {
         VStack(spacing: 0) {
             featureRow(DeviceAuth.icon, [Color(hex: 0x7C5CFF), Color(hex: 0x5B3DF5)], "\(DeviceAuth.name) ile otomatik giriş", "Uygulamayı açtığınızda şifre sormaz")
             Divider().padding(.leading, 62)
-            featureRow("wifi.slash", [Color(hex: 0x2FD58A), Color(hex: 0x13A866)], "Tamamen çevrimdışı", "Veriler yalnızca bu iPhone'da durur")
+            featureRow("iphone", [Color(hex: 0x2FD58A), Color(hex: 0x13A866)], "Veriler yalnızca bu iPhone'da", "Şifreleriniz hiçbir sunucuya gönderilmez")
             Divider().padding(.leading, 62)
             featureRow("lock.shield.fill", [Color(hex: 0x4D9BFF), Color(hex: 0x2A6DF0)], "AES-256 şifreleme", "Bankaların kullandığı düzeyde koruma")
         }
@@ -242,7 +242,7 @@ struct LockView: View {
                 .frame(height: 170)
                 VStack(spacing: 6) {
                     Text(AppInfo.name).font(.system(size: 32, weight: .bold))
-                    Label("Kilitli · Çevrimdışı", systemImage: "lock.fill")
+                    Label("Kilitli", systemImage: "lock.fill")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(.secondary)
                 }

@@ -35,6 +35,7 @@ struct EntryDetailView: View {
                     .card()
                 }
                 if !e.history.isEmpty { historyCard(e) }
+                siblingsCard(e)
                 VStack(spacing: 4) {
                     Text("Oluşturuldu: \(DateText.full(e.createdDate))")
                     Text("Son düzenleme: \(DateText.full(e.updatedDate))")
@@ -61,7 +62,7 @@ struct EntryDetailView: View {
             }
         }
         .sheet(item: $editing) { t in
-            EntryEditView(original: t.entry, defaultCategory: t.entry?.category ?? .genel)
+            EntryEditView(original: t.entry, defaultCategory: t.entry?.category ?? t.template?.category ?? .genel, template: t.template)
         }
         .confirmationDialog("“\(e.title)” silinsin mi?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Kaydı sil", role: .destructive) {
@@ -78,12 +79,9 @@ struct EntryDetailView: View {
             Circle().fill(Color.white.opacity(0.1)).frame(width: 240, height: 240).offset(x: 90, y: -110)
             Circle().fill(Color.white.opacity(0.07)).frame(width: 160, height: 160).offset(x: -200, y: 60)
             VStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 24, style: .continuous).fill(Color.white.opacity(0.22))
-                    Text(e.initial).font(.system(size: 36, weight: .bold, design: .rounded))
-                }
-                .frame(width: 78, height: 78)
-                .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(Color.white.opacity(0.35), lineWidth: 1))
+                BrandAvatar(entry: e, size: 78)
+                    .overlay(RoundedRectangle(cornerRadius: 78 * 0.3, style: .continuous).strokeBorder(Color.white.opacity(0.45), lineWidth: 1.5))
+                    .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 5)
                 Text(e.title)
                     .font(.title2.weight(.bold))
                     .multilineTextAlignment(.center)
@@ -239,6 +237,46 @@ struct EntryDetailView: View {
         .padding(.vertical, 13)
     }
 
+    @ViewBuilder
+    private func siblingsCard(_ e: Entry) -> some View {
+        let others = store.siblings(of: e)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label(others.isEmpty ? "Bu servis" : "Bu servisteki diğer hesaplar (\(others.count))", systemImage: "person.2.fill")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    editing = EditTarget(entry: nil, template: Entry(title: e.title, url: e.url, category: e.category))
+                } label: {
+                    Label("Hesap ekle", systemImage: "plus.circle.fill").font(.footnote.weight(.semibold))
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding(.bottom, 4)
+            ForEach(others) { o in
+                NavigationLink(value: o.id) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "person.crop.circle.fill").font(.title3).foregroundStyle(Color.kasaAccent.opacity(0.85))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(o.username.isEmpty ? o.title : o.username).font(.subheadline.weight(.semibold)).lineLimit(1)
+                            if !o.username.isEmpty && o.title != e.title {
+                                Text(o.title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+                    }
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(PressableStyle())
+                .foregroundStyle(.primary)
+            }
+        }
+        .card()
+    }
+
     private func historyCard(_ e: Entry) -> some View {
         DisclosureGroup {
             VStack(spacing: 10) {
@@ -286,9 +324,15 @@ struct EntryEditView: View {
     @State private var confirmDiscard = false
     @State private var error: String?
 
-    init(original: Entry?, defaultCategory: EntryCategory) {
+    init(original: Entry?, defaultCategory: EntryCategory, template: Entry? = nil) {
         self.original = original
-        let e = original ?? Entry(category: defaultCategory)
+        var base = Entry(category: defaultCategory)
+        if let t = template {
+            base.title = t.title
+            base.url = t.url
+            base.category = t.category
+        }
+        let e = original ?? base
         _title = State(initialValue: e.title)
         _username = State(initialValue: e.username)
         _password = State(initialValue: e.password)
@@ -297,7 +341,7 @@ struct EntryEditView: View {
         _notes = State(initialValue: e.notes)
         _category = State(initialValue: e.category)
         _favorite = State(initialValue: e.favorite)
-        _categoryTouched = State(initialValue: original != nil || defaultCategory != .genel)
+        _categoryTouched = State(initialValue: original != nil || defaultCategory != .genel || template != nil)
         _showPassword = State(initialValue: original == nil)
         _showAdvanced = State(initialValue: !e.totp.isEmpty)
     }
@@ -329,7 +373,30 @@ struct EntryEditView: View {
 
                 Section("Hesap bilgileri") {
                     iconRow("textformat") {
-                        TextField("Başlık (ör. Instagram)", text: $title)
+                        TextField("Site veya uygulama adı (ör. Instagram)", text: $title)
+                    }
+                    if !suggestions.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(suggestions, id: \.title) { sug in
+                                    Button { apply(sug) } label: {
+                                        HStack(spacing: 6) {
+                                            BrandAvatar(entry: Entry(title: sug.title, url: sug.url, category: sug.category), size: 22)
+                                            Text(sug.title).font(.subheadline.weight(.semibold))
+                                            if let n = sug.count { Text("\(n)").font(.caption.weight(.bold)).foregroundStyle(.secondary) }
+                                        }
+                                        .padding(.leading, 5)
+                                        .padding(.trailing, 11)
+                                        .frame(height: 32)
+                                        .background(Capsule().fill(Color.primary.opacity(0.06)))
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .foregroundStyle(.primary)
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                        }
+                        .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
                     }
                     iconRow("person.fill") {
                         TextField("Kullanıcı adı veya e-posta", text: $username)
@@ -462,7 +529,52 @@ struct EntryEditView: View {
                 guard !categoryTouched else { return }
                 category = CategoryGuess.guess(title: newValue, url: url) ?? .genel
             }
+            .onChange(of: url) { newValue in
+                guard !categoryTouched, let c = CategoryGuess.guess(title: title, url: newValue) else { return }
+                category = c
+            }
         }
+    }
+
+    private struct Suggestion {
+        let title: String
+        let url: String
+        let category: EntryCategory
+        let count: Int?
+    }
+
+    /// Yazılan ada göre öneriler: önce kasadaki mevcut servisler, sonra bilinen servisler
+    private var suggestions: [Suggestion] {
+        let locale = Locale(identifier: "tr_TR")
+        let q = title.trimmingCharacters(in: .whitespaces).lowercased(with: locale)
+        guard q.count >= 2 else { return [] }
+        var result: [Suggestion] = []
+        var seen = Set<String>()
+        var existing: [String: (Entry, Int)] = [:]
+        for e in store.entries where e.id != original?.id {
+            let name = ServiceCatalog.match(title: e.title, url: e.url)?.name ?? e.title
+            let key = name.lowercased(with: locale)
+            if let cur = existing[key] { existing[key] = (cur.0, cur.1 + 1) } else { existing[key] = (e, 1) }
+        }
+        for (key, value) in existing.sorted(by: { $0.key < $1.key }) where key.hasPrefix(q) && key != q {
+            let name = ServiceCatalog.match(title: value.0.title, url: value.0.url)?.name ?? value.0.title
+            result.append(Suggestion(title: name, url: value.0.url, category: value.0.category, count: value.1))
+            seen.insert(key)
+        }
+        for s in ServiceCatalog.suggestions(for: q) {
+            let key = s.name.lowercased(with: locale)
+            if seen.contains(key) || key == q { continue }
+            result.append(Suggestion(title: s.name, url: s.domain, category: s.category, count: nil))
+            seen.insert(key)
+        }
+        return Array(result.prefix(8))
+    }
+
+    private func apply(_ s: Suggestion) {
+        Haptics.tap()
+        title = s.title
+        if url.trimmingCharacters(in: .whitespaces).isEmpty { url = s.url }
+        if !categoryTouched { category = s.category }
     }
 
     private func iconRow<C: View>(_ icon: String, @ViewBuilder content: () -> C) -> some View {

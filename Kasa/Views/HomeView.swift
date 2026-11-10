@@ -53,13 +53,51 @@ enum SortMode: String, CaseIterable, Identifiable {
 struct EditTarget: Identifiable {
     let id = UUID()
     let entry: Entry?
+    var template: Entry? = nil
+}
+
+/// Aynı servise ait birden fazla hesap (ör. 3 Gmail hesabı)
+struct ServiceGroup: Identifiable {
+    let key: String
+    let name: String
+    let entries: [Entry]
+    var id: String { "g:" + key }
+    var lead: Entry { entries[0] }
+}
+
+enum ListItem: Identifiable {
+    case single(Entry)
+    case group(ServiceGroup)
+
+    var id: String {
+        switch self {
+        case .single(let e): return e.id
+        case .group(let g): return g.id
+        }
+    }
+
+    var sortName: String {
+        switch self {
+        case .single(let e): return e.title
+        case .group(let g): return g.name
+        }
+    }
+
+    var initial: String {
+        switch self {
+        case .single(let e): return e.initial
+        case .group(let g):
+            guard let f = g.name.trimmingCharacters(in: .whitespaces).first else { return "#" }
+            return String(f).uppercased(with: Locale(identifier: "tr_TR"))
+        }
+    }
 }
 
 struct ListSection: Identifiable {
     let id: String
     let title: String
     var icon: String?
-    var items: [Entry]
+    var items: [ListItem]
 }
 
 // MARK: - Ana ekran
@@ -73,6 +111,7 @@ struct HomeView: View {
     @State private var showImporter = false
     @State private var pendingDelete: Entry?
     @State private var path: [String] = []
+    @State private var expanded: Set<String> = []
 
     private var sort: SortMode { SortMode(stored: sortRaw) }
     private var isBrowsing: Bool { query.isEmpty && filter == .all }
@@ -109,7 +148,7 @@ struct HomeView: View {
                 EntryDetailView(entryID: id)
             }
             .sheet(item: $editing) { target in
-                EntryEditView(original: target.entry, defaultCategory: defaultCategory)
+                EntryEditView(original: target.entry, defaultCategory: defaultCategory, template: target.template)
             }
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.commaSeparatedText, .plainText, .data]) { result in
                 if case .success(let url) = result { importCSV(url) }
@@ -172,8 +211,13 @@ struct HomeView: View {
             } else {
                 ForEach(sections) { section in
                     Section {
-                        ForEach(section.items) { e in
-                            row(e)
+                        ForEach(section.items) { item in
+                            switch item {
+                            case .single(let e):
+                                row(e)
+                            case .group(let g):
+                                groupRow(g)
+                            }
                         }
                     } header: {
                         sectionHeader(section.title, icon: section.icon)
@@ -200,9 +244,32 @@ struct HomeView: View {
         .textCase(nil)
     }
 
-    private func row(_ e: Entry) -> some View {
+    private func groupRow(_ g: ServiceGroup) -> some View {
+        DisclosureGroup(isExpanded: Binding(
+            get: { expanded.contains(g.key) },
+            set: { open in
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if open { expanded.insert(g.key) } else { expanded.remove(g.key) }
+                }
+            })) {
+            ForEach(g.entries) { e in row(e, inGroup: true) }
+            Button {
+                editing = EditTarget(entry: nil, template: Entry(title: g.name, url: g.lead.url, category: g.lead.category))
+            } label: {
+                Label("\(g.name) için hesap ekle", systemImage: "plus.circle.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.kasaAccent)
+            }
+            .listRowBackground(Color.surface)
+        } label: {
+            GroupRowView(group: g)
+        }
+        .listRowBackground(Color.surface)
+    }
+
+    private func row(_ e: Entry, inGroup: Bool = false) -> some View {
         NavigationLink(value: e.id) {
-            EntryRowView(entry: e).equatable()
+            EntryRowView(entry: e, inGroup: inGroup).equatable()
         }
         .listRowBackground(Color.surface)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -334,9 +401,28 @@ struct HomeView: View {
         }
     }
 
+    /// Aynı servise ait kayıtları tek grupta toplar
+    private func groupedItems(_ list: [Entry]) -> [ListItem] {
+        var order: [String] = []
+        var buckets: [String: [Entry]] = [:]
+        for e in list {
+            let k = ServiceKey.of(e)
+            if buckets[k] == nil { order.append(k) }
+            buckets[k, default: []].append(e)
+        }
+        return order.map { (k: String) -> ListItem in
+            let items = buckets[k] ?? []
+            if items.count == 1 { return .single(items[0]) }
+            let sorted = items.sorted {
+                ($0.username.isEmpty ? $0.title : $0.username).localizedCaseInsensitiveCompare($1.username.isEmpty ? $1.title : $1.username) == .orderedAscending
+            }
+            return .group(ServiceGroup(key: k, name: ServiceKey.displayName(for: sorted), entries: sorted))
+        }
+    }
+
     private func buildSections(_ list: [Entry]) -> [ListSection] {
         guard !list.isEmpty else { return [] }
-        let byTitle: (Entry, Entry) -> Bool = { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        let byName: (ListItem, ListItem) -> Bool = { $0.sortName.localizedCaseInsensitiveCompare($1.sortName) == .orderedAscending }
 
         if !query.isEmpty {
             let locale = Locale(identifier: "tr_TR")
@@ -345,22 +431,23 @@ struct HomeView: View {
                 let ap = a.title.lowercased(with: locale).hasPrefix(q)
                 let bp = b.title.lowercased(with: locale).hasPrefix(q)
                 if ap != bp { return ap }
-                return byTitle(a, b)
+                return a.title.localizedCaseInsensitiveCompare(b.title) == .orderedAscending
             }
-            return [ListSection(id: "results", title: "Sonuçlar", icon: "magnifyingglass", items: sorted)]
+            return [ListSection(id: "results", title: "Sonuçlar", icon: "magnifyingglass", items: sorted.map { .single($0) })]
         }
 
         switch sort {
         case .az, .za:
-            let sorted = sort == .az ? list.sorted(by: byTitle) : list.sorted { byTitle($1, $0) }
+            let items = groupedItems(list)
+            let sorted = sort == .az ? items.sorted(by: byName) : items.sorted { byName($1, $0) }
             var result: [ListSection] = []
-            for e in sorted {
-                var k = e.initial
+            for item in sorted {
+                var k = item.initial
                 if k.rangeOfCharacter(from: .letters) == nil { k = "#" }
                 if let last = result.indices.last, result[last].id == k {
-                    result[last].items.append(e)
+                    result[last].items.append(item)
                 } else {
-                    result.append(ListSection(id: k, title: k, icon: nil, items: [e]))
+                    result.append(ListSection(id: k, title: k, icon: nil, items: [item]))
                 }
             }
             return result
@@ -375,17 +462,19 @@ struct HomeView: View {
                 let b = DateBucket.of(date, now: now, calendar: cal)
                 let id = "b\(b.rank)"
                 if let last = result.indices.last, result[last].id == id {
-                    result[last].items.append(e)
+                    result[last].items.append(.single(e))
                 } else {
-                    result.append(ListSection(id: id, title: b.title, icon: "calendar", items: [e]))
+                    result.append(ListSection(id: id, title: b.title, icon: "calendar", items: [.single(e)]))
                 }
             }
             return result
         case .category:
             var result: [ListSection] = []
             for c in EntryCategory.allCases {
-                let items = list.filter { $0.category == c }.sorted(by: byTitle)
-                if !items.isEmpty { result.append(ListSection(id: c.rawValue, title: c.name, icon: c.icon, items: items)) }
+                let inCat = list.filter { $0.category == c }
+                if inCat.isEmpty { continue }
+                let items = groupedItems(inCat).sorted(by: byName)
+                result.append(ListSection(id: c.rawValue, title: c.name, icon: c.icon, items: items))
             }
             return result
         }
@@ -456,15 +545,35 @@ enum DateBucket {
 /// Liste satırı. Equatable olduğu için yalnızca kayıt değiştiğinde yeniden çizilir.
 struct EntryRowView: View, Equatable {
     let entry: Entry
+    var inGroup = false
 
-    static func == (lhs: EntryRowView, rhs: EntryRowView) -> Bool { lhs.entry == rhs.entry }
+    static func == (lhs: EntryRowView, rhs: EntryRowView) -> Bool { lhs.entry == rhs.entry && lhs.inGroup == rhs.inGroup }
+
+    private var mainText: String {
+        inGroup && !entry.username.isEmpty ? entry.username : entry.title
+    }
+
+    private var subText: String {
+        if inGroup {
+            if !entry.username.isEmpty && entry.title != mainText { return entry.title }
+            return entry.host.isEmpty ? entry.category.name : entry.host
+        }
+        return entry.subtitle
+    }
 
     var body: some View {
         HStack(spacing: 13) {
-            BrandAvatar(entry: entry)
+            if inGroup {
+                Image(systemName: "person.crop.circle.fill")
+                    .font(.system(size: 26))
+                    .foregroundStyle(Color.kasaAccent.opacity(0.85))
+                    .frame(width: 34)
+            } else {
+                BrandAvatar(entry: entry)
+            }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(entry.title).font(.body.weight(.semibold)).lineLimit(1)
+                    Text(mainText).font(.body.weight(.semibold)).lineLimit(1)
                     if entry.favorite {
                         Image(systemName: "star.fill").font(.system(size: 10)).foregroundStyle(Color.kasaWarn)
                     }
@@ -477,12 +586,34 @@ struct EntryRowView: View, Equatable {
                             .background(Capsule().fill(Color.kasaAccent.opacity(0.14)))
                     }
                 }
-                Text(entry.subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                Text(subText).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
             if !entry.password.isEmpty {
                 CopyButton(text: entry.password, message: "\(entry.title) şifresi kopyalandı")
             }
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+struct GroupRowView: View {
+    let group: ServiceGroup
+
+    var body: some View {
+        HStack(spacing: 13) {
+            BrandAvatar(entry: group.lead)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(group.name).font(.body.weight(.semibold)).lineLimit(1)
+                Text("\(group.entries.count) hesap").font(.subheadline).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 4)
+            Text("\(group.entries.count)")
+                .font(.caption.weight(.heavy))
+                .foregroundStyle(.white)
+                .frame(minWidth: 24, minHeight: 24)
+                .padding(.horizontal, 4)
+                .background(Capsule().fill(LinearGradient.kasa))
         }
         .padding(.vertical, 3)
     }

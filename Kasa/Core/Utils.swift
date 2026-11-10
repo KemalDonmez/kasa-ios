@@ -241,23 +241,28 @@ enum TOTP {
 
 enum CategoryGuess {
     private static let rules: [(EntryCategory, [String])] = [
+        (.oyun, ["oyun", "game", "steam", "epic", "playstation", "psn", "xbox", "nintendo", "riot", "valorant", "league of legends",
+                 "ubisoft", "battle.net", "blizzard", "origin", "roblox", "minecraft", "fortnite", "pubg", "metin2", "knight online",
+                 "itemsatis", "itemsatış", "itemci", "item ", "epin", "e-pin", "gamesatis", "oyunfor", "gameforge", "cs2", "csgo",
+                 "lol ", "wolfteam", "zula", "rise online"]),
         (.sosyal, ["instagram", "facebook", "twitter", "x.com", "tiktok", "linkedin", "snapchat", "reddit", "pinterest",
-                   "threads", "telegram", "whatsapp", "discord", "tumblr", "youtube", "eksi", "ekşi", "messenger"]),
+                   "threads", "telegram", "whatsapp", "discord", "tumblr", "eksi", "ekşi", "messenger"]),
         (.eposta, ["gmail", "outlook", "hotmail", "yandex", "yahoo", "icloud", "proton", "mail", "e-posta", "eposta"]),
         (.finans, ["bank", "banka", "garanti", "akbank", "isbank", "işbank", "iş bankası", "ziraat", "yapı kredi", "yapikredi",
                    "enpara", "qnb", "denizbank", "halkbank", "vakıf", "vakif", "kuveyt", "papara", "paypal", "binance", "btcturk",
                    "paribu", "ininal", "kredi kart", "borsa", "midas", "e-devlet", "edevlet", "vergi", "sgk"]),
         (.alisveris, ["trendyol", "hepsiburada", "amazon", "n11", "getir", "yemeksepeti", "sahibinden", "aliexpress", "ebay",
                       "migros", "letgo", "dolap", "ciceksepeti", "çiçeksepeti", "temu", "shein", "zara", "lcw", "boyner"]),
-        (.eglence, ["netflix", "spotify", "steam", "epic", "playstation", "psn", "xbox", "nintendo", "exxen", "blutv", "disney",
-                    "twitch", "riot", "valorant", "prime video", "tabii", "gain", "apple music", "ubisoft", "battle.net", "tod"]),
-        (.cihaz, ["wifi", "wi-fi", "modem", "router", "kablosuz", "kamera", "superonline", "türk telekom", "turknet", "turkcell"]),
+        (.eglence, ["netflix", "spotify", "youtube", "exxen", "blutv", "disney", "twitch", "prime video", "tabii", "gain",
+                    "apple music", "tod", "mubi", "deezer"]),
+        (.cihaz, ["wifi", "wi-fi", "modem", "router", "kablosuz", "kamera", "superonline", "türk telekom", "turknet", "turkcell", "vodafone"]),
         (.isler, ["slack", "jira", "teams", "zoom", "office", "microsoft", "notion", "github", "gitlab", "asana", "trello",
                   "vpn", "şirket", "sirket", "kurumsal"]),
     ]
 
     static func guess(title: String, url: String) -> EntryCategory? {
-        let s = "\(title) \(url)".lowercased(with: Locale(identifier: "tr_TR"))
+        if let s = ServiceCatalog.match(title: title, url: url) { return s.category }
+        let s = " " + "\(title) \(url)".lowercased(with: Locale(identifier: "tr_TR")) + " "
         guard s.trimmingCharacters(in: .whitespaces).count >= 2 else { return nil }
         for (cat, words) in rules where words.contains(where: { s.contains($0) }) {
             return cat

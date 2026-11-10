@@ -7,6 +7,7 @@ struct SettingsView: View {
     @AppStorage(Prefs.autoLock) private var autoLock = 60
     @AppStorage(Prefs.clipboard) private var clipboard = 30
     @AppStorage(Prefs.theme) private var theme = 0
+    @AppStorage(Prefs.siteIcons) private var siteIcons = true
 
     enum PasswordPurpose { case exportBackupMaster, exportBackupNew, importBackup, exportCSV }
     enum ImportMode { case backup, csv }
@@ -54,6 +55,24 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                     PalettePicker()
                         .listRowInsets(EdgeInsets(top: 10, leading: 0, bottom: 10, trailing: 0))
+                }
+                Section {
+                    Toggle(isOn: $siteIcons) {
+                        rowLabel("photo.on.rectangle.angled", [Color(hex: 0xFF8A50), Color(hex: 0xF25A22)], "Site logoları",
+                                 "Instagram, Gmail gibi sitelerin logosunu göster")
+                    }
+                    .tint(.kasaAccent)
+                    if siteIcons {
+                        Button {
+                            SiteIconStore.shared.clearAll()
+                            Toaster.shared.show("Logolar yeniden indirilecek")
+                        } label: {
+                            rowLabel("arrow.clockwise", [Color(hex: 0x9A9AB0), Color(hex: 0x6E6E86)], "Logoları yenile")
+                        }
+                        .foregroundStyle(.primary)
+                    }
+                } footer: {
+                    Text("Logo, sitenin kendisinden yalnızca bir kez indirilip bu iPhone'a kaydedilir; sonra internetsiz gösterilir. Şifreleriniz veya kullanıcı adlarınız hiçbir yere gönderilmez. Kapatırsanız uygulama hiç internete çıkmaz.")
                 }
                 backupSection
                 Section {
@@ -142,7 +161,7 @@ struct SettingsView: View {
                 LogoView(size: 58)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(AppInfo.name).font(.title3.weight(.bold))
-                    Label("Çevrimdışı · Veriler yalnızca bu iPhone'da", systemImage: "wifi.slash")
+                    Label("Veriler yalnızca bu iPhone'da", systemImage: "iphone")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                     Label("\(store.entries.count) kayıt · AES-256 ile şifreli", systemImage: "lock.fill")

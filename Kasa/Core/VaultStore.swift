@@ -127,9 +127,32 @@ final class VaultStore: ObservableObject {
             lastBackup = vault.lastBackup
         }
         vaultKey = key
+        migrateGamesIfNeeded()
         recomputeReport()
         selectedTab = .vault
         phase = .unlocked
+    }
+
+    /// Eski "Eğlence & Oyun" kategorisindeki oyun kayıtlarını yeni "Oyun" kategorisine taşır (bir kez)
+    private func migrateGamesIfNeeded() {
+        let d = UserDefaults.standard
+        guard !d.bool(forKey: Prefs.migratedGames) else { return }
+        var changed = false
+        for i in entries.indices where entries[i].category == .eglence {
+            if CategoryGuess.guess(title: entries[i].title, url: entries[i].url) == .oyun {
+                entries[i].category = .oyun
+                changed = true
+            }
+        }
+        d.set(true, forKey: Prefs.migratedGames)
+        if changed { persist() }
+    }
+
+    /// Aynı servise ait diğer kayıtlar
+    func siblings(of e: Entry) -> [Entry] {
+        let key = ServiceKey.of(e)
+        return entries.filter { $0.id != e.id && ServiceKey.of($0) == key }
+            .sorted { $0.username.localizedCaseInsensitiveCompare($1.username) == .orderedAscending }
     }
 
     // MARK: - Kurulum
