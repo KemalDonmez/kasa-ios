@@ -55,12 +55,23 @@ struct Strength {
                                  "galatasaray", "fenerbahce", "fenerbahçe", "besiktas", "beşiktaş", "trabzon",
                                  "istanbul", "ankara", "izmir", "turkiye", "türkiye", "seviyorum", "askim", "aşkım", "qwe", "zxc"]
 
+    private static let lowerSet = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzçğıöşü")
+    private static let upperSet = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZÇĞİÖŞÜ")
+    private static let digitSet = CharacterSet(charactersIn: "0123456789")
+    private static let trLocale = Locale(identifier: "tr_TR")
+    private static let repeatRegex = try! NSRegularExpression(pattern: "(.)\\1{2,}")
+    private static let sequenceRegex = try! NSRegularExpression(
+        pattern: "(0123|1234|2345|3456|4567|5678|6789|9876|8765|7654|abcd|bcde|qwer|wert|asdf|zxcv)",
+        options: [.caseInsensitive])
+    private static let yearRegex = try! NSRegularExpression(pattern: "(19|20)[0-9]{2}$")
+
+    private static func matches(_ re: NSRegularExpression, _ s: String) -> Bool {
+        re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+    }
+
     static func of(_ pw: String) -> Strength {
         guard !pw.isEmpty else { return Strength(score: 0, bits: 0) }
         var pool = 0
-        let lowerSet = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzçğıöşü")
-        let upperSet = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZÇĞİÖŞÜ")
-        let digitSet = CharacterSet(charactersIn: "0123456789")
         var hasLower = false, hasUpper = false, hasDigit = false, hasOther = false
         for scalar in pw.unicodeScalars {
             if lowerSet.contains(scalar) { hasLower = true }
@@ -74,12 +85,11 @@ struct Strength {
         if hasOther { pool += 33 }
         let length = pw.count
         var bits = Double(length) * log2(Double(max(pool, 1)))
-        let low = pw.lowercased(with: Locale(identifier: "tr_TR"))
+        let low = pw.lowercased(with: trLocale)
         if common.contains(where: { low.contains($0) }) { bits *= 0.5 }
-        if pw.range(of: "(.)\\1{2,}", options: .regularExpression) != nil { bits -= 10 }
-        if pw.range(of: "(0123|1234|2345|3456|4567|5678|6789|9876|8765|7654|abcd|bcde|qwer|wert|asdf|zxcv)",
-                    options: [.regularExpression, .caseInsensitive]) != nil { bits -= 10 }
-        if length < 12, pw.range(of: "(19|20)[0-9]{2}$", options: .regularExpression) != nil { bits -= 6 }
+        if matches(repeatRegex, pw) { bits -= 10 }
+        if matches(sequenceRegex, pw) { bits -= 10 }
+        if length < 12 && matches(yearRegex, pw) { bits -= 6 }
         if Set(pw).count * 2 < length { bits *= 0.75 }
         let b = max(0, Int(bits.rounded()))
         let score: Int
@@ -230,19 +240,26 @@ enum TOTP {
 // MARK: - Kategori tahmini
 
 enum CategoryGuess {
-    private static let rules: [(EntryCategory, String)] = [
-        (.sosyal, "instagram|facebook|twitter|\\bx\\.com|tiktok|linkedin|snapchat|reddit|pinterest|threads|telegram|whatsapp|discord|tumblr|youtube|eksi"),
-        (.eposta, "gmail|outlook|hotmail|yandex|yahoo|icloud|proton|mail|e-?posta"),
-        (.finans, "bank|banka|garanti|akbank|i[sş]bank|ziraat|yap[ıi] ?kredi|enpara|qnb|deniz|halkbank|vak[ıi]f|kuveyt|papara|paypal|binance|btcturk|paribu|ininal|kart|kredi|borsa|midas|e-?devlet|vergi"),
-        (.alisveris, "trendyol|hepsiburada|amazon|n11|getir|yemeksepeti|sahibinden|aliexpress|ebay|migros|letgo|dolap|ciceksepeti|temu|shein|zara|lcw"),
-        (.eglence, "netflix|spotify|steam|epic|playstation|psn|xbox|nintendo|exxen|blutv|disney|twitch|riot|valorant|prime video|tabii|gain|apple music|origin|ubisoft|battle\\.?net"),
-        (.cihaz, "wi-?fi|wifi|modem|router|kablosuz|kamera"),
-        (.isler, "slack|jira|teams|zoom|office|microsoft|notion|github|gitlab|asana|trello|vpn|şirket|sirket|kurumsal"),
+    private static let rules: [(EntryCategory, [String])] = [
+        (.sosyal, ["instagram", "facebook", "twitter", "x.com", "tiktok", "linkedin", "snapchat", "reddit", "pinterest",
+                   "threads", "telegram", "whatsapp", "discord", "tumblr", "youtube", "eksi", "ekşi", "messenger"]),
+        (.eposta, ["gmail", "outlook", "hotmail", "yandex", "yahoo", "icloud", "proton", "mail", "e-posta", "eposta"]),
+        (.finans, ["bank", "banka", "garanti", "akbank", "isbank", "işbank", "iş bankası", "ziraat", "yapı kredi", "yapikredi",
+                   "enpara", "qnb", "denizbank", "halkbank", "vakıf", "vakif", "kuveyt", "papara", "paypal", "binance", "btcturk",
+                   "paribu", "ininal", "kredi kart", "borsa", "midas", "e-devlet", "edevlet", "vergi", "sgk"]),
+        (.alisveris, ["trendyol", "hepsiburada", "amazon", "n11", "getir", "yemeksepeti", "sahibinden", "aliexpress", "ebay",
+                      "migros", "letgo", "dolap", "ciceksepeti", "çiçeksepeti", "temu", "shein", "zara", "lcw", "boyner"]),
+        (.eglence, ["netflix", "spotify", "steam", "epic", "playstation", "psn", "xbox", "nintendo", "exxen", "blutv", "disney",
+                    "twitch", "riot", "valorant", "prime video", "tabii", "gain", "apple music", "ubisoft", "battle.net", "tod"]),
+        (.cihaz, ["wifi", "wi-fi", "modem", "router", "kablosuz", "kamera", "superonline", "türk telekom", "turknet", "turkcell"]),
+        (.isler, ["slack", "jira", "teams", "zoom", "office", "microsoft", "notion", "github", "gitlab", "asana", "trello",
+                  "vpn", "şirket", "sirket", "kurumsal"]),
     ]
 
     static func guess(title: String, url: String) -> EntryCategory? {
-        let s = "\(title) \(url)"
-        for (cat, pattern) in rules where s.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil {
+        let s = "\(title) \(url)".lowercased(with: Locale(identifier: "tr_TR"))
+        guard s.trimmingCharacters(in: .whitespaces).count >= 2 else { return nil }
+        for (cat, words) in rules where words.contains(where: { s.contains($0) }) {
             return cat
         }
         return nil
@@ -370,10 +387,12 @@ enum DateText {
         return "\(days) gün önce"
     }
 
-    static func stamp() -> String {
+    private static let stampFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: Date())
-    }
+        return f
+    }()
+
+    static func stamp() -> String { stampFormatter.string(from: Date()) }
 }

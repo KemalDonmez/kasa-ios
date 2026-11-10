@@ -14,141 +14,46 @@ struct EntryDetailView: View {
         if let e = store.entry(entryID) {
             content(e)
         } else {
-            Text("Kayıt bulunamadı").foregroundColor(.secondary)
+            ZStack {
+                AppBackground()
+                Text("Kayıt bulunamadı").foregroundStyle(.secondary)
+            }
         }
     }
 
     private func content(_ e: Entry) -> some View {
-        List {
-            Section {
-                VStack(spacing: 10) {
-                    AvatarView(entry: e, size: 76)
-                        .shadow(color: e.category.color.opacity(0.35), radius: 14, x: 0, y: 8)
-                    Text(e.title)
-                        .font(.title2.weight(.bold))
-                        .multilineTextAlignment(.center)
-                    Text(e.category.name)
-                        .font(.caption.weight(.bold))
-                        .foregroundColor(e.category.color)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Capsule().fill(e.category.color.opacity(0.15)))
-                    Button {
-                        store.toggleFavorite(e.id)
-                    } label: {
-                        Label(e.favorite ? "Favorilerde" : "Favorilere ekle", systemImage: e.favorite ? "star.fill" : "star")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundColor(e.favorite ? .kasaWarn : .secondary)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(Capsule().fill(Color(.secondarySystemGroupedBackground)))
+        ScrollView {
+            VStack(spacing: 18) {
+                hero(e)
+                quickActions(e)
+                fieldsCard(e)
+                if !e.notes.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label("Notlar", systemImage: "note.text").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                        Text(e.notes).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .buttonStyle(.plain)
+                    .card()
                 }
-                .frame(maxWidth: .infinity)
-                .listRowBackground(Color.clear)
-            }
-
-            Section {
-                if !e.username.isEmpty {
-                    field(label: "Kullanıcı adı") {
-                        Text(e.username).textSelection(.enabled)
-                    } actions: {
-                        copyButton(e.username, "Kullanıcı adı kopyalandı")
-                    }
-                }
-                if !e.password.isEmpty {
-                    field(label: "Şifre") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(revealed ? e.password : String(repeating: "•", count: min(e.password.count, 14)))
-                                .font(.system(.body, design: .monospaced))
-                                .textSelection(.enabled)
-                            StrengthBar(password: e.password, showLabel: false).frame(width: 100)
-                        }
-                    } actions: {
-                        Button { revealed.toggle() } label: {
-                            Image(systemName: revealed ? "eye.slash" : "eye")
-                        }
-                        .buttonStyle(.borderless)
-                        copyButton(e.password, "Şifre kopyalandı")
-                    }
-                }
-                if let cfg = TOTP.parse(e.totp) {
-                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                        let code = TOTP.code(cfg, at: ctx.date)
-                        field(label: "Doğrulama kodu (2FA)") {
-                            Text(TOTP.formatted(code))
-                                .font(.system(size: 28, weight: .bold, design: .monospaced))
-                                .foregroundColor(.kasaAccent)
-                        } actions: {
-                            CountdownRing(remaining: TOTP.secondsRemaining(cfg, at: ctx.date), period: cfg.period)
-                            Button {
-                                Clipboard.copy(TOTP.code(cfg))
-                                store.showToast("Doğrulama kodu kopyalandı")
-                            } label: { Image(systemName: "doc.on.doc") }
-                            .buttonStyle(.borderless)
-                        }
-                    }
-                } else if !e.totp.isEmpty {
-                    field(label: "Doğrulama kodu (2FA)") {
-                        Text("Geçersiz anahtar").foregroundColor(.kasaDanger)
-                    } actions: { EmptyView() }
-                }
-                if !e.url.isEmpty {
-                    field(label: "Web sitesi") {
-                        Text(e.host).textSelection(.enabled)
-                    } actions: {
-                        if let url = URLHelper.openable(e.url) {
-                            Link(destination: url) { Image(systemName: "arrow.up.right.square") }
-                                .buttonStyle(.borderless)
-                        }
-                        copyButton(e.url, "Adres kopyalandı")
-                    }
-                }
-                if e.username.isEmpty && e.password.isEmpty && e.url.isEmpty && e.totp.isEmpty {
-                    Text("Bu kayıtta giriş bilgisi yok.").foregroundColor(.secondary)
-                }
-            }
-
-            if !e.notes.isEmpty {
-                Section("Notlar") {
-                    Text(e.notes).textSelection(.enabled)
-                }
-            }
-
-            if !e.history.isEmpty {
-                Section {
-                    DisclosureGroup("Önceki şifreler (\(e.history.count))") {
-                        ForEach(Array(e.history.enumerated()), id: \.offset) { item in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(String(repeating: "•", count: 10)).font(.system(.body, design: .monospaced))
-                                    Text("\(DateText.full(Date(timeIntervalSince1970: item.element.changedAt / 1000))) tarihine kadar")
-                                        .font(.caption).foregroundColor(.secondary)
-                                }
-                                Spacer()
-                                copyButton(item.element.password, "Eski şifre kopyalandı")
-                            }
-                        }
-                    }
-                } header: { Text("Geçmiş") }
-            }
-
-            Section {
-                Button(role: .destructive) { confirmDelete = true } label: {
-                    Label("Kaydı sil", systemImage: "trash").frame(maxWidth: .infinity)
-                }
-            } footer: {
-                VStack(spacing: 3) {
+                if !e.history.isEmpty { historyCard(e) }
+                VStack(spacing: 4) {
                     Text("Oluşturuldu: \(DateText.full(e.createdDate))")
                     Text("Son düzenleme: \(DateText.full(e.updatedDate))")
                     Text("Şifre son değişiklik: \(DateText.relative(e.pwChangedDate))")
                 }
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
-                .padding(.top, 8)
+                Button(role: .destructive) { confirmDelete = true } label: {
+                    Label("Kaydı sil", systemImage: "trash").font(.headline).foregroundStyle(Color.kasaDanger)
+                        .frame(maxWidth: .infinity, minHeight: 50)
+                }
+                .buttonStyle(PressableStyle())
+                .card(padding: 0)
             }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 40)
         }
-        .listStyle(.insetGrouped)
+        .background(AppBackground())
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -167,27 +72,196 @@ struct EntryDetailView: View {
         }
     }
 
-    private func field<C: View, A: View>(label: String, @ViewBuilder content: () -> C, @ViewBuilder actions: () -> A) -> some View {
-        HStack(spacing: 14) {
+    private func hero(_ e: Entry) -> some View {
+        ZStack(alignment: .topTrailing) {
+            BrandPalette.gradient(for: e)
+            Circle().fill(Color.white.opacity(0.1)).frame(width: 240, height: 240).offset(x: 90, y: -110)
+            Circle().fill(Color.white.opacity(0.07)).frame(width: 160, height: 160).offset(x: -200, y: 60)
+            VStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous).fill(Color.white.opacity(0.22))
+                    Text(e.initial).font(.system(size: 36, weight: .bold, design: .rounded))
+                }
+                .frame(width: 78, height: 78)
+                .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(Color.white.opacity(0.35), lineWidth: 1))
+                Text(e.title)
+                    .font(.title2.weight(.bold))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                HStack(spacing: 8) {
+                    Pill(text: e.category.name, icon: e.category.icon)
+                    if !e.host.isEmpty { Pill(text: e.host, icon: "globe") }
+                }
+            }
+            .padding(.vertical, 26)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity)
+            Button { store.toggleFavorite(e.id) } label: {
+                Image(systemName: e.favorite ? "star.fill" : "star")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 40, height: 40)
+                    .background(Circle().fill(Color.white.opacity(0.2)))
+            }
+            .buttonStyle(PressableStyle())
+            .padding(14)
+            .accessibilityLabel(e.favorite ? "Favorilerden çıkar" : "Favorilere ekle")
+        }
+        .foregroundStyle(.white)
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .padding(.top, 4)
+    }
+
+    private func quickActions(_ e: Entry) -> some View {
+        HStack(spacing: 10) {
+            actionButton("person.fill", "Kullanıcı adı", enabled: !e.username.isEmpty) {
+                Clipboard.copy(e.username); Toaster.shared.show("Kullanıcı adı kopyalandı")
+            }
+            actionButton("key.fill", "Şifre", enabled: !e.password.isEmpty) {
+                Clipboard.copy(e.password); Toaster.shared.show("Şifre kopyalandı")
+            }
+            if let url = URLHelper.openable(e.url) {
+                Link(destination: url) { actionLabel("safari.fill", "Siteyi aç") }
+                    .buttonStyle(PressableStyle())
+            } else {
+                actionButton("safari.fill", "Siteyi aç", enabled: false) {}
+            }
+        }
+    }
+
+    private func actionButton(_ icon: String, _ title: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) { actionLabel(icon, title) }
+            .buttonStyle(PressableStyle())
+            .disabled(!enabled)
+            .opacity(enabled ? 1 : 0.4)
+    }
+
+    private func actionLabel(_ icon: String, _ title: String) -> some View {
+        VStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(LinearGradient.kasa)
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.primary).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, minHeight: 66)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.surface))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.hairline))
+    }
+
+    private func fieldsCard(_ e: Entry) -> some View {
+        VStack(spacing: 0) {
+            if !e.username.isEmpty {
+                fieldRow(icon: "person.fill", label: "Kullanıcı adı") {
+                    Text(e.username).textSelection(.enabled)
+                } trailing: {
+                    CopyButton(text: e.username, message: "Kullanıcı adı kopyalandı")
+                }
+            }
+            if !e.password.isEmpty {
+                if !e.username.isEmpty { Divider().padding(.leading, 60) }
+                fieldRow(icon: "key.fill", label: "Şifre") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(revealed ? e.password : String(repeating: "•", count: min(e.password.count, 14)))
+                            .font(.system(.body, design: .monospaced).weight(.medium))
+                            .textSelection(.enabled)
+                        StrengthBar(password: e.password)
+                    }
+                } trailing: {
+                    HStack(spacing: 6) {
+                        Button { withAnimation(.easeInOut(duration: 0.15)) { revealed.toggle() } } label: {
+                            Image(systemName: revealed ? "eye.slash.fill" : "eye.fill")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 38, height: 38)
+                                .background(Circle().fill(Color.primary.opacity(0.06)))
+                        }
+                        .buttonStyle(PressableStyle())
+                        CopyButton(text: e.password, message: "Şifre kopyalandı")
+                    }
+                }
+            }
+            if let cfg = TOTP.parse(e.totp) {
+                Divider().padding(.leading, 60)
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    let code = TOTP.code(cfg, at: ctx.date)
+                    fieldRow(icon: "number", label: "Doğrulama kodu (2FA)") {
+                        Text(TOTP.formatted(code))
+                            .font(.system(size: 28, weight: .bold, design: .monospaced))
+                            .foregroundStyle(LinearGradient.kasa)
+                    } trailing: {
+                        HStack(spacing: 8) {
+                            CountdownRing(remaining: TOTP.secondsRemaining(cfg, at: ctx.date), period: cfg.period)
+                            CopyButton(text: code, message: "Doğrulama kodu kopyalandı")
+                        }
+                    }
+                }
+            } else if !e.totp.isEmpty {
+                Divider().padding(.leading, 60)
+                fieldRow(icon: "number", label: "Doğrulama kodu (2FA)") {
+                    Text("Geçersiz anahtar").foregroundStyle(Color.kasaDanger)
+                } trailing: { EmptyView() }
+            }
+            if !e.url.isEmpty {
+                Divider().padding(.leading, 60)
+                fieldRow(icon: "globe", label: "Web sitesi") {
+                    Text(e.url).textSelection(.enabled).lineLimit(2)
+                } trailing: {
+                    CopyButton(text: e.url, message: "Adres kopyalandı")
+                }
+            }
+            if e.username.isEmpty && e.password.isEmpty && e.url.isEmpty && e.totp.isEmpty {
+                Text("Bu kayıtta giriş bilgisi yok.")
+                    .foregroundStyle(.secondary)
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Color.surface))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(Color.hairline))
+    }
+
+    private func fieldRow<C: View, T: View>(icon: String, label: String,
+                                            @ViewBuilder content: () -> C,
+                                            @ViewBuilder trailing: () -> T) -> some View {
+        HStack(alignment: .center, spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.kasaAccent)
+                .frame(width: 32, height: 32)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.kasaAccent.opacity(0.12)))
             VStack(alignment: .leading, spacing: 4) {
-                Text(label).font(.caption.weight(.semibold)).foregroundColor(.secondary)
+                Text(label).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 content()
             }
             Spacer(minLength: 8)
-            actions()
+            trailing()
         }
-        .padding(.vertical, 4)
-        .font(.body)
-        .imageScale(.large)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
     }
 
-    private func copyButton(_ text: String, _ message: String) -> some View {
-        Button {
-            Clipboard.copy(text)
-            store.showToast(message)
-        } label: { Image(systemName: "doc.on.doc") }
-        .buttonStyle(.borderless)
-        .accessibilityLabel("Kopyala")
+    private func historyCard(_ e: Entry) -> some View {
+        DisclosureGroup {
+            VStack(spacing: 10) {
+                ForEach(Array(e.history.enumerated()), id: \.offset) { item in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(String(repeating: "•", count: 10)).font(.system(.body, design: .monospaced))
+                            Text("\(DateText.full(Date(timeIntervalSince1970: item.element.changedAt / 1000))) tarihine kadar")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        CopyButton(text: item.element.password, message: "Eski şifre kopyalandı")
+                    }
+                }
+            }
+            .padding(.top, 10)
+        } label: {
+            Label("Önceki şifreler (\(e.history.count))", systemImage: "clock.arrow.circlepath")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+        }
+        .tint(.secondary)
+        .card()
     }
 }
 
@@ -207,7 +281,8 @@ struct EntryEditView: View {
     @State private var category: EntryCategory
     @State private var favorite: Bool
     @State private var categoryTouched: Bool
-    @State private var showPassword = false
+    @State private var showPassword: Bool
+    @State private var showAdvanced: Bool
     @State private var confirmDiscard = false
     @State private var error: String?
 
@@ -223,6 +298,8 @@ struct EntryEditView: View {
         _category = State(initialValue: e.category)
         _favorite = State(initialValue: e.favorite)
         _categoryTouched = State(initialValue: original != nil || defaultCategory != .genel)
+        _showPassword = State(initialValue: original == nil)
+        _showAdvanced = State(initialValue: !e.totp.isEmpty)
     }
 
     private var hasChanges: Bool {
@@ -231,28 +308,39 @@ struct EntryEditView: View {
             || totp != e.totp || notes != e.notes || favorite != e.favorite || (original != nil && category != e.category)
     }
 
-    private var categoryBinding: Binding<EntryCategory> {
-        Binding(get: { category }, set: { category = $0; categoryTouched = true })
+    private var preview: Entry {
+        Entry(title: title.isEmpty ? (URLHelper.host(url).isEmpty ? "?" : URLHelper.host(url)) : title, url: url, category: category)
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Giriş bilgileri") {
-                    LabeledContent("Başlık") {
-                        TextField("ör. Instagram", text: $title)
-                            .multilineTextAlignment(.leading)
+                Section {
+                    HStack(spacing: 14) {
+                        BrandAvatar(entry: preview, size: 54)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(title.isEmpty ? "Yeni şifre" : title).font(.headline).lineLimit(1)
+                            Text(category.name).font(.caption).foregroundStyle(.secondary)
+                        }
                     }
-                    LabeledContent("Kullanıcı adı") {
-                        TextField("E-posta veya kullanıcı adı", text: $username)
+                    .padding(.vertical, 4)
+                    .listRowBackground(Color.clear)
+                }
+
+                Section("Hesap bilgileri") {
+                    iconRow("textformat") {
+                        TextField("Başlık (ör. Instagram)", text: $title)
+                    }
+                    iconRow("person.fill") {
+                        TextField("Kullanıcı adı veya e-posta", text: $username)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled(true)
                             .keyboardType(.emailAddress)
                             .textContentType(.username)
                     }
                     VStack(spacing: 10) {
-                        LabeledContent("Şifre") {
-                            HStack(spacing: 12) {
+                        iconRow("key.fill") {
+                            HStack(spacing: 10) {
                                 Group {
                                     if showPassword {
                                         TextField("Şifre", text: $password)
@@ -265,61 +353,97 @@ struct EntryEditView: View {
                                 .autocorrectionDisabled(true)
                                 .textContentType(.newPassword)
                                 Button { showPassword.toggle() } label: {
-                                    Image(systemName: showPassword ? "eye.slash" : "eye").foregroundColor(.secondary)
+                                    Image(systemName: showPassword ? "eye.slash" : "eye").foregroundStyle(.secondary)
                                 }
                                 .buttonStyle(.borderless)
-                                Button {
-                                    password = PasswordGenerator.generate(Prefs.genOptions)
-                                    showPassword = true
-                                    Haptics.success()
-                                } label: {
-                                    Image(systemName: "wand.and.stars").foregroundColor(.kasaAccent)
-                                }
-                                .buttonStyle(.borderless)
-                                .accessibilityLabel("Güçlü şifre üret")
                             }
                         }
-                        if !password.isEmpty { StrengthBar(password: password) }
+                        if !password.isEmpty { StrengthBar(password: password).padding(.leading, 44) }
+                        Button {
+                            password = PasswordGenerator.generate(Prefs.genOptions)
+                            showPassword = true
+                            Haptics.success()
+                        } label: {
+                            Label("Güçlü şifre üret", systemImage: "wand.and.stars")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity, minHeight: 40)
+                                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(LinearGradient.kasa))
+                        }
+                        .buttonStyle(.borderless)
                     }
-                    LabeledContent("Web sitesi") {
-                        TextField("ör. instagram.com", text: $url)
+                    .padding(.vertical, 2)
+                    iconRow("globe") {
+                        TextField("Web sitesi (ör. instagram.com)", text: $url)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled(true)
                             .keyboardType(.URL)
                     }
-                    Picker("Kategori", selection: categoryBinding) {
-                        ForEach(EntryCategory.allCases) { c in
-                            Label(c.name, systemImage: c.icon).tag(c)
+                }
+
+                Section("Kategori") {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(EntryCategory.allCases) { c in
+                                Button {
+                                    category = c
+                                    categoryTouched = true
+                                    Haptics.tap()
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: c.icon).font(.caption.weight(.semibold))
+                                        Text(c.shortName).font(.subheadline.weight(.semibold))
+                                    }
+                                    .padding(.horizontal, 12)
+                                    .frame(height: 36)
+                                    .foregroundStyle(category == c ? Color.white : Color.primary)
+                                    .background(
+                                        Capsule().fill(category == c
+                                                       ? AnyShapeStyle(LinearGradient(colors: c.colors, startPoint: .leading, endPoint: .trailing))
+                                                       : AnyShapeStyle(Color.primary.opacity(0.06)))
+                                    )
+                                }
+                                .buttonStyle(.borderless)
+                            }
                         }
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 16)
                     }
+                    .listRowInsets(EdgeInsets())
                 }
 
                 Section {
-                    LabeledContent("2FA anahtarı") {
+                    TextField("Notlar (güvenlik soruları, PIN, ek bilgiler…)", text: $notes, axis: .vertical)
+                        .lineLimit(3...10)
+                    Toggle(isOn: $favorite) {
+                        Label("Favorilere ekle", systemImage: "star.fill")
+                    }
+                    .tint(.kasaAccent)
+                } header: {
+                    Text("Diğer")
+                }
+
+                Section {
+                    DisclosureGroup(isExpanded: $showAdvanced) {
                         TextField("Kurulum anahtarı veya otpauth://", text: $totp)
                             .textInputAutocapitalization(.characters)
                             .autocorrectionDisabled(true)
+                            .font(.system(.body, design: .monospaced))
+                        Text("Bir sitede iki adımlı doğrulamayı açarken gösterilen “kurulum anahtarını” girerseniz 6 haneli kodlar burada üretilir.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } label: {
+                        Label("İki adımlı doğrulama (2FA)", systemImage: "number")
                     }
-                } header: {
-                    Text("İki adımlı doğrulama (isteğe bağlı)")
-                } footer: {
-                    Text("Bir sitede iki adımlı doğrulamayı açarken gösterilen “kurulum anahtarını” girerseniz Kasa 6 haneli kodları sizin için üretir.")
-                }
-
-                Section("Notlar") {
-                    TextField("Güvenlik soruları, PIN kodu, ek bilgiler…", text: $notes, axis: .vertical)
-                        .lineLimit(4...12)
-                }
-
-                Section {
-                    Toggle(isOn: $favorite) { Label("Favorilere ekle", systemImage: "star.fill") }
                 }
 
                 if let error {
-                    Section { Text(error).foregroundColor(.kasaDanger) }
+                    Section { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(Color.kasaDanger) }
                 }
             }
-            .navigationTitle(original == nil ? "Yeni kayıt" : "Kaydı düzenle")
+            .scrollContentBackground(.hidden)
+            .background(AppBackground())
+            .navigationTitle(original == nil ? "Yeni şifre" : "Düzenle")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -341,6 +465,17 @@ struct EntryEditView: View {
         }
     }
 
+    private func iconRow<C: View>(_ icon: String, @ViewBuilder content: () -> C) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color.kasaAccent)
+                .frame(width: 30, height: 30)
+                .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.kasaAccent.opacity(0.12)))
+            content()
+        }
+    }
+
     private func save() {
         var t = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let u = username.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -353,7 +488,7 @@ struct EntryEditView: View {
             if !key.lowercased().hasPrefix("otpauth:") {
                 key = key.replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "-", with: "").uppercased()
             }
-            guard TOTP.parse(key) != nil else { error = "2FA anahtarı geçersiz."; Haptics.error(); return }
+            guard TOTP.parse(key) != nil else { error = "2FA anahtarı geçersiz."; showAdvanced = true; Haptics.error(); return }
         }
         var e = original ?? Entry()
         e.title = t
@@ -365,7 +500,8 @@ struct EntryEditView: View {
         e.category = category
         e.favorite = favorite
         store.upsert(e)
-        store.showToast(original == nil ? "Kayıt eklendi" : "Değişiklikler kaydedildi")
+        Haptics.success()
+        Toaster.shared.show(original == nil ? "Şifre kaydedildi" : "Değişiklikler kaydedildi")
         dismiss()
     }
 }

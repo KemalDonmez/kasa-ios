@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import LocalAuthentication
 
 struct SettingsView: View {
     @EnvironmentObject private var store: VaultStore
@@ -7,11 +8,12 @@ struct SettingsView: View {
     @AppStorage(Prefs.clipboard) private var clipboard = 30
     @AppStorage(Prefs.theme) private var theme = 0
 
-    enum PasswordPurpose { case exportBackup, importBackup, exportCSV }
+    enum PasswordPurpose { case exportBackupMaster, exportBackupNew, importBackup, exportCSV }
     enum ImportMode { case backup, csv }
 
     @State private var passwordPurpose: PasswordPurpose?
     @State private var promptPassword = ""
+    @State private var promptPassword2 = ""
     @State private var importMode: ImportMode = .backup
     @State private var showImporter = false
     @State private var pendingBackup: Data?
@@ -28,24 +30,46 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                securitySection
-                appearanceSection
-                backupSection
-                Section("Tehlikeli bölge") {
-                    Button(role: .destructive) { confirmWipe = true } label: {
-                        HStack(spacing: 12) {
-                            IconBadge(systemName: "trash.fill", color: .kasaDanger)
-                            Text("Tüm verileri sil").fontWeight(.semibold)
-                        }
+            Form {
+                headerSection
+                lockSection
+                Section("Pano") {
+                    Picker(selection: $clipboard) {
+                        Text("15 saniye").tag(15)
+                        Text("30 saniye").tag(30)
+                        Text("1 dakika").tag(60)
+                        Text("2 dakika").tag(120)
+                        Text("Kapalı").tag(0)
+                    } label: {
+                        rowLabel("doc.on.clipboard.fill", [Color(hex: 0x2FD58A), Color(hex: 0x13A866)], "Panoyu temizle",
+                                 "Kopyalanan şifre bu süre sonra silinir")
                     }
                 }
+                Section("Görünüm") {
+                    Picker("Tema", selection: $theme) {
+                        Text("Sistem").tag(0)
+                        Text("Koyu").tag(1)
+                        Text("Açık").tag(2)
+                    }
+                    .pickerStyle(.segmented)
+                }
+                backupSection
+                Section {
+                    Button(role: .destructive) { confirmWipe = true } label: {
+                        rowLabel("trash.fill", [Color(hex: 0xFF6B7A), Color(hex: 0xE5364A)], "Tüm verileri sil")
+                            .foregroundStyle(Color.kasaDanger)
+                    }
+                } header: { Text("Tehlikeli bölge") }
                 aboutSection
             }
-            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(AppBackground())
             .navigationTitle("Ayarlar")
             .alert(passwordTitle, isPresented: Binding(get: { passwordPurpose != nil }, set: { if !$0 { passwordPurpose = nil } })) {
-                SecureField("Ana şifre", text: $promptPassword)
+                SecureField(passwordPurpose == .exportBackupNew ? "Yedek şifresi" : "Şifre", text: $promptPassword)
+                if passwordPurpose == .exportBackupNew {
+                    SecureField("Yedek şifresi (tekrar)", text: $promptPassword2)
+                }
                 Button("Vazgeç", role: .cancel) { pendingBackup = nil }
                 Button("Devam") { handlePassword() }
             } message: {
@@ -56,17 +80,13 @@ struct SettingsView: View {
                 guard case .success(let url) = result, let data = FileAccess.read(url) else { return }
                 if importMode == .backup {
                     pendingBackup = data
-                    promptPassword = ""
-                    passwordPurpose = .importBackup
+                    askPassword(.importBackup)
                 } else {
                     importCSV(data)
                 }
             }
             .confirmationDialog("Şifresiz dışa aktarım", isPresented: $confirmCSV, titleVisibility: .visible) {
-                Button("Anladım, devam et", role: .destructive) {
-                    promptPassword = ""
-                    passwordPurpose = .exportCSV
-                }
+                Button("Anladım, devam et", role: .destructive) { startCSVExport() }
                 Button("Vazgeç", role: .cancel) {}
             } message: {
                 Text("CSV dosyası tüm şifrelerinizi AÇIK METİN olarak içerir. Kimseyle paylaşmayın ve işiniz bitince silin.")
@@ -79,10 +99,10 @@ struct SettingsView: View {
                         Button("Kaydet") {
                             let h = String(hintText.trimmingCharacters(in: .whitespaces).prefix(80))
                             store.setHint(h)
-                            store.showToast(h.isEmpty ? "İpucu kaldırıldı" : "İpucu kaydedildi")
+                            Toaster.shared.show(h.isEmpty ? "İpucu kaldırıldı" : "İpucu kaydedildi")
                         }
                     } message: {
-                        Text("Kilit ekranında gösterilir ve şifrelenmez. Şifrenin kendisini yazmayın. Silmek için boş bırakın.")
+                        Text("Kilit ekranında gösterilir ve şifrelenmez. Şifrenin kendisini yazmayın.")
                     }
             )
             .overlay(
@@ -94,9 +114,9 @@ struct SettingsView: View {
                         Button("Kalıcı olarak sil", role: .destructive) {
                             if wipeText.trimmingCharacters(in: .whitespaces).uppercased(with: Locale(identifier: "tr_TR")) == "SİL" {
                                 store.wipe()
-                                store.showToast("Tüm veriler silindi")
+                                Toaster.shared.show("Tüm veriler silindi")
                             } else {
-                                store.showToast("Onay metni hatalı, silinmedi", isError: true)
+                                Toaster.shared.show("Onay metni hatalı, silinmedi", isError: true)
                             }
                         }
                     } message: {
@@ -107,19 +127,39 @@ struct SettingsView: View {
                 Button("Devam et", role: .destructive) { wipeText = ""; showWipeText = true }
                 Button("Vazgeç", role: .cancel) {}
             } message: {
-                Text("Kasadaki tüm kayıtlar bu iPhone'dan kalıcı olarak silinecek. Bu işlem geri alınamaz.")
+                Text("Tüm şifreleriniz bu iPhone'dan kalıcı olarak silinecek. Bu işlem geri alınamaz.")
             }
         }
     }
 
     // MARK: Bölümler
 
-    private var securitySection: some View {
-        Section("Güvenlik") {
-            if BiometricKeychain.isAvailable {
-                Toggle(isOn: Binding(get: { store.biometricsEnabled }, set: { setBiometrics($0) })) {
-                    settingLabel(BiometricKeychain.displayName + " ile aç", BiometricKeychain.iconName, .kasaOK)
+    private var headerSection: some View {
+        Section {
+            HStack(spacing: 16) {
+                LogoView(size: 58)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(AppInfo.name).font(.title3.weight(.bold))
+                    Label("Çevrimdışı · Veriler yalnızca bu iPhone'da", systemImage: "wifi.slash")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Label("\(store.entries.count) kayıt · AES-256 ile şifreli", systemImage: "lock.fill")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
                 }
+            }
+            .padding(.vertical, 6)
+        }
+    }
+
+    private var lockSection: some View {
+        Section {
+            if DeviceAuth.isAvailable {
+                Toggle(isOn: Binding(get: { store.deviceUnlockEnabled }, set: { on in Task { await store.setDeviceUnlock(on) } })) {
+                    rowLabel(DeviceAuth.icon, [Color(hex: 0x7C5CFF), Color(hex: 0x5B3DF5)], "\(DeviceAuth.name) ile otomatik aç",
+                             "Uygulama açılınca şifre sormaz")
+                }
+                .tint(.kasaAccent)
             }
             Picker(selection: $autoLock) {
                 Text("Hemen").tag(0)
@@ -130,209 +170,224 @@ struct SettingsView: View {
                 Text("1 saat").tag(3600)
                 Text("Asla").tag(-1)
             } label: {
-                settingLabel("Otomatik kilit", "timer", .kasaAccent, subtitle: "Uygulamadan çıktıktan sonra")
-            }
-            Picker(selection: $clipboard) {
-                Text("15 saniye").tag(15)
-                Text("30 saniye").tag(30)
-                Text("1 dakika").tag(60)
-                Text("2 dakika").tag(120)
-                Text("Kapalı").tag(0)
-            } label: {
-                settingLabel("Panoyu temizle", "doc.on.clipboard", .kasaAccent2, subtitle: "Kopyalanan şifre bu süre sonra silinir")
+                rowLabel("timer", [Color(hex: 0x4D9BFF), Color(hex: 0x2A6DF0)], "Otomatik kilit", "Uygulamadan çıktıktan sonra")
             }
             NavigationLink {
-                ChangeMasterView()
+                MasterPasswordView()
             } label: {
-                settingLabel("Ana şifreyi değiştir", "key.fill", .kasaWarn)
+                rowLabel("key.fill", [Color(hex: 0xFFB648), Color(hex: 0xF08A1C)], "Kurtarma şifresi",
+                         store.hasMaster ? "Tanımlı" : "Tanımlı değil · önerilir")
             }
-            Button {
-                hintText = store.hint
-                showHintEditor = true
-            } label: {
-                HStack {
-                    settingLabel("Şifre ipucu", "lightbulb.fill", Color(hex: 0x17B5CC), subtitle: store.hint.isEmpty ? "Tanımlı değil" : "Tanımlı")
-                    Spacer()
-                    Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundColor(Color(.tertiaryLabel))
+            if store.hasMaster {
+                Button {
+                    hintText = store.hint
+                    showHintEditor = true
+                } label: {
+                    HStack {
+                        rowLabel("lightbulb.fill", [Color(hex: 0x33D1E6), Color(hex: 0x119DB8)], "Şifre ipucu",
+                                 store.hint.isEmpty ? "Tanımlı değil" : "Tanımlı")
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                    }
                 }
+                .foregroundStyle(.primary)
             }
-            .foregroundColor(.primary)
             Button { store.lock() } label: {
-                settingLabel("Şimdi kilitle", "lock.fill", Color(hex: 0x7C7C8E))
+                rowLabel("lock.fill", [Color(hex: 0x9A9AB0), Color(hex: 0x6E6E86)], "Şimdi kilitle")
             }
-            .foregroundColor(.primary)
-        }
-    }
-
-    private var appearanceSection: some View {
-        Section("Görünüm") {
-            Picker("Tema", selection: $theme) {
-                Text("Sistem").tag(0)
-                Text("Koyu").tag(1)
-                Text("Açık").tag(2)
+            .foregroundStyle(.primary)
+        } header: {
+            Text("Kilit ve güvenlik")
+        } footer: {
+            if !store.hasMaster {
+                Text("Kurtarma şifresi, telefon değiştiğinde veya uygulama farklı bir Apple kimliğiyle yeniden yüklendiğinde şifrelerinize erişmenizi sağlar.")
             }
-            .pickerStyle(.segmented)
         }
     }
 
     private var backupSection: some View {
         Section {
             Button {
-                promptPassword = ""
-                passwordPurpose = .exportBackup
+                askPassword(store.hasMaster ? .exportBackupMaster : .exportBackupNew)
             } label: {
-                settingLabel("Şifreli yedek al", "externaldrive.fill.badge.plus", .kasaOK,
-                             subtitle: store.lastBackup == 0 ? "Henüz yedek alınmadı"
-                             : "Son yedek: \(DateText.relative(Date(timeIntervalSince1970: store.lastBackup / 1000)))")
+                rowLabel("externaldrive.fill.badge.plus", [Color(hex: 0x2FD58A), Color(hex: 0x13A866)], "Şifreli yedek al",
+                         store.lastBackup == 0 ? "Henüz yedek alınmadı"
+                         : "Son yedek: \(DateText.relative(Date(timeIntervalSince1970: store.lastBackup / 1000)))")
             }
             Button {
                 importMode = .backup
                 showImporter = true
             } label: {
-                settingLabel("Yedekten geri yükle", "arrow.down.doc.fill", .kasaAccent2, subtitle: "Kayıtlar mevcut kasayla birleştirilir")
+                rowLabel("arrow.down.doc.fill", [Color(hex: 0x4D9BFF), Color(hex: 0x2A6DF0)], "Yedekten geri yükle",
+                         "Kayıtlar mevcut şifrelerle birleştirilir")
             }
             Button {
                 importMode = .csv
                 showImporter = true
             } label: {
-                settingLabel("CSV içe aktar", "tablecells", .kasaAccent, subtitle: "iCloud Anahtar Zinciri, Chrome, Bitwarden…")
+                rowLabel("tablecells.fill", [Color(hex: 0x8B6CFF), Color(hex: 0x5B3DF5)], "CSV içe aktar",
+                         "iCloud Anahtar Zinciri, Chrome, Bitwarden…")
             }
             Button { confirmCSV = true } label: {
-                settingLabel("CSV dışa aktar", "square.and.arrow.up", Color(hex: 0xFF7440), subtitle: "Şifresiz – dikkatli kullanın")
+                rowLabel("square.and.arrow.up.fill", [Color(hex: 0xFF8A50), Color(hex: 0xF25A22)], "CSV dışa aktar",
+                         "Şifresiz · dikkatli kullanın")
             }
         } header: {
             Text("Yedekleme ve aktarım")
         } footer: {
-            Text("Şifreli yedek yalnızca ana şifrenizle açılabilir. Paylaşım menüsünden “Dosyalar'a Kaydet” › iCloud Drive'ı seçmeniz önerilir.")
+            Text("Yedek dosyası şifrelidir. Paylaşım menüsünden “Dosyalar'a Kaydet” › iCloud Drive'ı seçmeniz önerilir.")
         }
-        .foregroundColor(.primary)
+        .foregroundStyle(.primary)
     }
 
     private var aboutSection: some View {
         Section {
-            VStack(spacing: 8) {
-                LogoView(size: 54)
-                Text("Kasa").font(.headline)
-                Text("Sürüm \(appVersion)").font(.caption).foregroundColor(.secondary)
-                Text("Verileriniz yalnızca bu iPhone'da saklanır ve internete gönderilmez.\nAES-256-GCM şifreleme · PBKDF2-SHA256 (600.000 tur)")
+            VStack(spacing: 6) {
+                Text("\(AppInfo.name) · Sürüm \(appVersion)").font(.footnote.weight(.semibold))
+                Text("İnternet bağlantısı kullanmaz. AES-256-GCM şifreleme, anahtar iPhone'un Anahtar Zinciri'nde.")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
             .listRowBackground(Color.clear)
         }
     }
 
-    private func settingLabel(_ title: String, _ icon: String, _ color: Color, subtitle: String? = nil) -> some View {
+    private func rowLabel(_ icon: String, _ colors: [Color], _ title: String, _ subtitle: String? = nil) -> some View {
         HStack(spacing: 12) {
-            IconBadge(systemName: icon, color: color)
+            IconBadge(systemName: icon, colors: colors, size: 32)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
-                if let subtitle { Text(subtitle).font(.caption).foregroundColor(.secondary) }
+                if let subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
             }
         }
     }
 
     // MARK: İşlemler
 
+    private func askPassword(_ purpose: PasswordPurpose) {
+        promptPassword = ""
+        promptPassword2 = ""
+        passwordPurpose = purpose
+    }
+
     private var passwordTitle: String {
         switch passwordPurpose {
         case .importBackup: return "Yedeğin şifresi"
-        default: return "Ana şifrenizi girin"
+        case .exportBackupNew: return "Yedek şifresi belirleyin"
+        default: return "Kurtarma şifreniz"
         }
     }
 
     private var passwordMessage: String {
         switch passwordPurpose {
-        case .exportBackup: return "Yedek, ana şifrenizle şifrelenir."
-        case .importBackup: return "Bu yedeği alırken kullandığınız ana şifreyi girin."
-        case .exportCSV: return "Güvenliğiniz için ana şifrenizi doğrulayın."
+        case .exportBackupMaster: return "Yedek, kurtarma şifrenizle şifrelenir."
+        case .exportBackupNew: return "Bu şifreyi unutmayın; yedeği geri yüklerken gerekecek. En az 8 karakter."
+        case .importBackup: return "Bu yedeği alırken kullandığınız şifreyi girin."
+        case .exportCSV: return "Güvenliğiniz için kurtarma şifrenizi doğrulayın."
         case .none: return ""
-        }
-    }
-
-    private func setBiometrics(_ on: Bool) {
-        guard on else { store.setBiometrics(false); return }
-        Task {
-            do {
-                _ = try await BiometricKeychain.authenticate(reason: "Face ID ile açmayı etkinleştirmek için")
-                store.setBiometrics(true)
-                if store.biometricsEnabled { store.showToast("\(BiometricKeychain.displayName) etkinleştirildi") }
-            } catch {
-                store.showToast(error.localizedDescription, isError: true)
-            }
         }
     }
 
     private func handlePassword() {
         guard let purpose = passwordPurpose else { return }
         let pw = promptPassword
+        let pw2 = promptPassword2
         promptPassword = ""
+        promptPassword2 = ""
         passwordPurpose = nil
         guard !pw.isEmpty else { return }
         switch purpose {
-        case .exportBackup:
-            store.busyMessage = "Yedek hazırlanıyor…"
-            Task {
-                do {
-                    let url = try await store.makeBackup(password: pw)
-                    store.busyMessage = nil
-                    ShareHelper.share(url: url, deleteAfter: true) { done in
-                        if done { store.showToast("Yedek kaydedildi") }
-                    }
-                } catch {
-                    store.busyMessage = nil
-                    store.showToast(error.localizedDescription, isError: true)
-                }
-            }
+        case .exportBackupNew:
+            guard pw.count >= 8 else { Toaster.shared.show("Yedek şifresi en az 8 karakter olmalı", isError: true); return }
+            guard pw == pw2 else { Toaster.shared.show("Şifreler eşleşmiyor", isError: true); return }
+            exportBackup(pw)
+        case .exportBackupMaster:
+            exportBackup(pw)
         case .importBackup:
             guard let data = pendingBackup else { return }
             pendingBackup = nil
-            store.busyMessage = "Yedek çözülüyor…"
+            Toaster.shared.busy = "Yedek çözülüyor…"
             Task {
                 do {
                     let r = try await store.mergeBackup(data: data, password: pw)
-                    store.busyMessage = nil
-                    store.showToast(r.added + r.updated == 0 ? "Yeni kayıt bulunamadı" : "\(r.added) yeni, \(r.updated) güncellenmiş kayıt")
+                    Toaster.shared.busy = nil
+                    Toaster.shared.show(r.added + r.updated == 0 ? "Yeni kayıt bulunamadı" : "\(r.added) yeni, \(r.updated) güncellenmiş kayıt")
                 } catch {
-                    store.busyMessage = nil
-                    store.showToast(error.localizedDescription, isError: true)
+                    Toaster.shared.busy = nil
+                    Toaster.shared.show(error.localizedDescription, isError: true)
                 }
             }
         case .exportCSV:
-            store.busyMessage = "Doğrulanıyor…"
+            Toaster.shared.busy = "Doğrulanıyor…"
             Task {
                 let ok = await store.verifyMaster(pw)
-                store.busyMessage = nil
-                guard ok else { store.showToast("Ana şifre hatalı", isError: true); return }
-                do {
-                    let url = try store.exportCSV()
-                    ShareHelper.share(url: url, deleteAfter: true)
-                } catch {
-                    store.showToast(error.localizedDescription, isError: true)
-                }
+                Toaster.shared.busy = nil
+                guard ok else { Toaster.shared.show("Şifre hatalı", isError: true); return }
+                shareCSV()
             }
+        }
+    }
+
+    private func exportBackup(_ pw: String) {
+        Toaster.shared.busy = "Yedek hazırlanıyor…"
+        Task {
+            do {
+                let url = try await store.makeBackup(password: pw)
+                Toaster.shared.busy = nil
+                ShareHelper.share(url: url, deleteAfter: true) { done in
+                    if done { Toaster.shared.show("Yedek kaydedildi") }
+                }
+            } catch {
+                Toaster.shared.busy = nil
+                Toaster.shared.show(error.localizedDescription, isError: true)
+            }
+        }
+    }
+
+    private func startCSVExport() {
+        if store.hasMaster {
+            askPassword(.exportCSV)
+            return
+        }
+        Task {
+            do {
+                _ = try await DeviceAuth.authenticate(reason: "Şifreleri dışa aktarmak için")
+                shareCSV()
+            } catch let e as LAError where e.code == .userCancel {
+                // vazgeçildi
+            } catch {
+                Toaster.shared.show(error.localizedDescription, isError: true)
+            }
+        }
+    }
+
+    private func shareCSV() {
+        do {
+            let url = try store.exportCSV()
+            ShareHelper.share(url: url, deleteAfter: true)
+        } catch {
+            Toaster.shared.show(error.localizedDescription, isError: true)
         }
     }
 
     private func importCSV(_ data: Data) {
         guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .windowsCP1254) else {
-            store.showToast("Dosya okunamadı", isError: true)
+            Toaster.shared.show("Dosya okunamadı", isError: true)
             return
         }
         guard let r = store.importCSV(text) else {
-            store.showToast("Dosyada “password” sütunu bulunamadı", isError: true)
+            Toaster.shared.show("Dosyada “password” sütunu bulunamadı", isError: true)
             return
         }
-        store.showToast("\(r.added) kayıt içe aktarıldı" + (r.skipped > 0 ? ", \(r.skipped) atlandı" : "") + ". CSV dosyasını silmeyi unutmayın.")
+        Toaster.shared.show("\(r.added) kayıt içe aktarıldı" + (r.skipped > 0 ? ", \(r.skipped) atlandı" : "") + ". CSV dosyasını silmeyi unutmayın.")
     }
 }
 
-// MARK: - Ana şifre değiştirme
+// MARK: - Kurtarma şifresi
 
-struct ChangeMasterView: View {
+struct MasterPasswordView: View {
     @EnvironmentObject private var store: VaultStore
     @Environment(\.dismiss) private var dismiss
     @State private var current = ""
@@ -340,12 +395,28 @@ struct ChangeMasterView: View {
     @State private var new2 = ""
     @State private var busy = false
     @State private var error: String?
+    @State private var confirmRemove = false
 
     var body: some View {
         Form {
-            Section("Mevcut ana şifre") {
-                SecureInput(placeholder: "Mevcut ana şifre", text: $current)
+            Section {
+                HStack(alignment: .top, spacing: 14) {
+                    IconBadge(systemName: "key.fill", colors: [Color(hex: 0xFFB648), Color(hex: 0xF08A1C)], size: 40)
+                    Text(store.hasMaster
+                         ? "Kurtarma şifreniz tanımlı. Face ID kullanılamadığında veya telefon değiştiğinde bu şifreyle açabilirsiniz."
+                         : "Face ID ile açma her gün için yeterli. Kurtarma şifresi; telefon değiştiğinde, sıfırlandığında veya uygulama başka bir Apple kimliğiyle yüklendiğinde şifrelerinize erişmenizi sağlar.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
             }
+
+            if store.hasMaster {
+                Section("Mevcut şifre") {
+                    SecureInput(placeholder: "Mevcut kurtarma şifresi", text: $current)
+                }
+            }
+
             Section {
                 SecureInput(placeholder: "Yeni şifre (en az 8 karakter)", text: $new1)
                 SecureField("Yeni şifre (tekrar)", text: $new2)
@@ -353,47 +424,81 @@ struct ChangeMasterView: View {
                     .autocorrectionDisabled(true)
                 if !new1.isEmpty { StrengthBar(password: new1) }
             } header: {
-                Text("Yeni ana şifre")
-            } footer: {
-                Text("Kasanız yeni şifreyle yeniden şifrelenir. Daha önce aldığınız yedekler eski şifreyle açılmaya devam eder; değişiklikten sonra yeni bir yedek almanız önerilir.")
+                Text(store.hasMaster ? "Yeni şifre" : "Kurtarma şifresi belirle")
             }
+
             if let error {
-                Section { Text(error).foregroundColor(.kasaDanger) }
+                Section { Label(error, systemImage: "exclamationmark.triangle.fill").foregroundStyle(Color.kasaDanger) }
             }
+
             Section {
-                Button {
-                    submit()
-                } label: {
+                Button { submit() } label: {
                     HStack {
                         Spacer()
-                        if busy { ProgressView() } else { Text("Ana şifreyi değiştir").fontWeight(.semibold) }
+                        if busy { ProgressView() } else { Text(store.hasMaster ? "Şifreyi değiştir" : "Kurtarma şifresini kaydet").fontWeight(.semibold) }
                         Spacer()
                     }
                 }
                 .disabled(busy)
             }
+
+            if store.hasMaster && store.deviceUnlockEnabled {
+                Section {
+                    Button(role: .destructive) { confirmRemove = true } label: {
+                        HStack { Spacer(); Text("Kurtarma şifresini kaldır"); Spacer() }
+                    }
+                    .disabled(busy)
+                } footer: {
+                    Text("Kaldırırsanız uygulama yalnızca \(DeviceAuth.name) / iPhone parolasıyla açılır.")
+                }
+            }
         }
-        .navigationTitle("Ana şifre")
+        .scrollContentBackground(.hidden)
+        .background(AppBackground())
+        .navigationTitle("Kurtarma şifresi")
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("Kurtarma şifresi kaldırılsın mı?", isPresented: $confirmRemove, titleVisibility: .visible) {
+            Button("Kaldır", role: .destructive) { remove() }
+            Button("Vazgeç", role: .cancel) {}
+        } message: {
+            Text("Mevcut şifrenizi yukarıya girmiş olmanız gerekir.")
+        }
     }
 
     private func submit() {
         error = nil
-        guard !current.isEmpty else { error = "Mevcut şifreyi girin."; return }
+        if store.hasMaster && current.isEmpty { error = "Mevcut şifreyi girin."; return }
         guard new1.count >= 8 else { error = "Yeni şifre en az 8 karakter olmalı."; return }
-        guard new1 == new2 else { error = "Yeni şifreler eşleşmiyor."; return }
-        guard Strength.of(new1).score >= 2 else { error = "Yeni şifre çok zayıf. Daha uzun veya karmaşık bir şifre seçin."; return }
+        guard new1 == new2 else { error = "Şifreler eşleşmiyor."; return }
+        guard Strength.of(new1).score >= 2 else { error = "Bu şifre çok kolay tahmin edilir. Daha uzun bir şifre seçin."; return }
         busy = true
         Task {
             do {
-                try await store.changeMaster(current: current, new: new1)
+                try await store.setMaster(current: store.hasMaster ? current : nil, new: new1)
                 busy = false
-                store.showToast("Ana şifre değiştirildi")
+                Toaster.shared.show("Kurtarma şifresi kaydedildi")
                 dismiss()
             } catch {
                 busy = false
                 self.error = error.localizedDescription
                 Haptics.error()
+            }
+        }
+    }
+
+    private func remove() {
+        error = nil
+        guard !current.isEmpty else { error = "Kaldırmak için mevcut şifreyi girin."; return }
+        busy = true
+        Task {
+            do {
+                try await store.removeMaster(current: current)
+                busy = false
+                Toaster.shared.show("Kurtarma şifresi kaldırıldı")
+                dismiss()
+            } catch {
+                busy = false
+                self.error = error.localizedDescription
             }
         }
     }

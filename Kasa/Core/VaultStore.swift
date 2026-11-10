@@ -2,66 +2,116 @@ import Foundation
 import SwiftUI
 import CryptoKit
 import Security
+import LocalAuthentication
 
 enum AppTab: Hashable { case vault, generator, security, settings }
 
-/// Kasanın tüm durumunu yöneten merkezi nesne
+/// Tüm verileri ve kilit durumunu yöneten merkezi nesne
 @MainActor
 final class VaultStore: ObservableObject {
     enum Phase { case loading, setup, locked, unlocked }
 
+    struct Report {
+        var total = 0
+        var weak: [Entry] = []
+        var reused: [Entry] = []
+        var old: [Entry] = []
+        var problemCount = 0
+        var score = 0
+        var with2FA = 0
+    }
+
     @Published private(set) var phase: Phase = .loading
     @Published private(set) var entries: [Entry] = []
+    @Published private(set) var report = Report()
     @Published private(set) var lastBackup: Double = 0
+    @Published private(set) var hasMaster = false
+    @Published private(set) var deviceUnlockEnabled = false
+    @Published private(set) var deviceKeyMissing = false
+    @Published private(set) var authInProgress = false
     @Published var selectedTab: AppTab = .vault
-    @Published var toast: ToastMessage?
-    @Published var busyMessage: String?
-    @Published var biometricsEnabled: Bool = UserDefaults.standard.bool(forKey: Prefs.biometrics)
 
     private var vaultKey: SymmetricKey?
     private var file: VaultFile?
     private var backgroundAt: Date?
-    private var bioInProgress = false
+    private var autoPromptArmed = true
+    private var strengthCache: [String: Strength] = [:]
+    private let fileURL: URL
+    private let ioQueue = DispatchQueue(label: "kasa.vault.io", qos: .userInitiated)
 
     var hint: String { file?.hint ?? "" }
-    var hasVault: Bool { file != nil }
-
-    private var fileURL: URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        if !FileManager.default.fileExists(atPath: dir.path) {
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        }
-        return dir.appendingPathComponent("kasa-vault.json")
-    }
+    var legacyBiometrics: Bool { UserDefaults.standard.bool(forKey: Prefs.legacyBiometrics) }
 
     init() {
         Prefs.register()
-        biometricsEnabled = UserDefaults.standard.bool(forKey: Prefs.biometrics)
-        load()
-    }
-
-    // MARK: - Yükleme ve kaydetme
-
-    private func load() {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        fileURL = dir.appendingPathComponent("kasa-vault.json")
+        deviceUnlockEnabled = UserDefaults.standard.bool(forKey: Prefs.deviceUnlock)
         if let data = try? Data(contentsOf: fileURL), let f = try? JSONDecoder().decode(VaultFile.self, from: data) {
             file = f
+            hasMaster = f.hasMaster
             phase = .locked
         } else {
             phase = .setup
         }
     }
 
-    private func save() throws {
+    // MARK: - Kaydetme
+
+    private func persist() {
         guard var f = file, let key = vaultKey else { return }
-        let payload = try JSONEncoder().encode(VaultData(entries: entries, lastBackup: lastBackup))
-        f.data = try KasaCrypto.seal(payload, key: key).base64
-        let out = try JSONEncoder().encode(f)
-        try out.write(to: fileURL, options: [.atomic, .completeFileProtection])
-        file = f
+        do {
+            let payload = try JSONEncoder().encode(VaultData(entries: entries, lastBackup: lastBackup))
+            f.data = try KasaCrypto.seal(payload, key: key).base64
+            f.v = 2
+            file = f
+            writeFile(f)
+        } catch {
+            Toaster.shared.show("Kaydedilemedi: \(error.localizedDescription)", isError: true)
+        }
     }
 
-    private func saveOrToast() {
-        do { try save() } catch { showToast("Kaydedilemedi: \(error.localizedDescription)", isError: true) }
+    private func writeFile(_ f: VaultFile) {
+        guard let out = try? JSONEncoder().encode(f) else { return }
+        let url = fileURL
+        ioQueue.async {
+            do {
+                try out.write(to: url, options: [.atomic, .completeFileProtection])
+            } catch {
+                Task { @MainActor in Toaster.shared.show("Diske yazılamadı: \(error.localizedDescription)", isError: true) }
+            }
+        }
+    }
+
+    private func entriesChanged(save: Bool = true) {
+        recomputeReport()
+        if save { persist() }
+    }
+
+    private func strength(_ pw: String) -> Strength {
+        if let s = strengthCache[pw] { return s }
+        let s = Strength.of(pw)
+        strengthCache[pw] = s
+        return s
+    }
+
+    private func recomputeReport() {
+        var r = Report()
+        let withPw = entries.filter { !$0.password.isEmpty }
+        r.total = withPw.count
+        var counts: [String: Int] = [:]
+        for e in withPw { counts[e.password, default: 0] += 1 }
+        let yearMs = 365.0 * 86_400_000
+        let now = Entry.nowMs()
+        r.weak = withPw.filter { strength($0.password).score <= 1 }
+        r.reused = withPw.filter { (counts[$0.password] ?? 0) > 1 }
+        r.old = withPw.filter { now - $0.pwChangedAt > yearMs }
+        let bad = Set((r.weak + r.reused + r.old).map(\.id))
+        r.problemCount = bad.count
+        r.score = r.total == 0 ? 0 : Int((Double(r.total - bad.count) / Double(r.total) * 100).rounded())
+        r.with2FA = entries.filter { !$0.totp.isEmpty }.count
+        report = r
     }
 
     private func open(with key: SymmetricKey) throws {
@@ -77,28 +127,98 @@ final class VaultStore: ObservableObject {
             lastBackup = vault.lastBackup
         }
         vaultKey = key
+        recomputeReport()
+        selectedTab = .vault
         phase = .unlocked
     }
 
     // MARK: - Kurulum
 
-    func createVault(password: String, hint: String, entries initial: [Entry] = []) async throws {
-        let salt = KasaCrypto.randomBytes(16)
-        let kek = await KasaCrypto.deriveKeyAsync(password: password, salt: salt, iterations: KasaCrypto.iterations)
+    /// Yeni kasa oluşturur. Cihaz kilidi (Face ID / parola) varsa onunla korunur; ana şifre isteğe bağlıdır.
+    func createVault(masterPassword: String?, hint: String, entries initial: [Entry] = []) async throws {
+        let useDevice = DeviceAuth.isAvailable
+        guard useDevice || (masterPassword?.isEmpty == false) else { throw KasaError.deviceAuthUnavailable }
         let vk = SymmetricKey(size: .bits256)
-        let wrapped = try KasaCrypto.seal(KasaCrypto.keyData(vk), key: kek)
-        file = VaultFile(salt: salt.base64, iter: KasaCrypto.iterations, wrappedKey: wrapped.base64, data: "",
-                         hint: hint, createdAt: Entry.nowMs())
+        var f = VaultFile(data: "", createdAt: Entry.nowMs(), hint: hint)
+        if let pw = masterPassword, !pw.isEmpty {
+            let salt = KasaCrypto.randomBytes(16)
+            let kek = await KasaCrypto.deriveKeyAsync(password: pw, salt: salt, iterations: KasaCrypto.iterations)
+            f.salt = salt.base64
+            f.iter = KasaCrypto.iterations
+            f.wrappedKey = try KasaCrypto.seal(KasaCrypto.keyData(vk), key: kek).base64
+        }
+        if useDevice {
+            try DeviceKeychain.save(KasaCrypto.keyData(vk))
+        }
+        file = f
+        hasMaster = f.hasMaster
+        setDeviceUnlockFlag(useDevice)
+        deviceKeyMissing = false
         vaultKey = vk
         entries = initial
         lastBackup = 0
-        try save()
         resetFails()
+        entriesChanged()
         selectedTab = .vault
         phase = .unlocked
     }
 
-    // MARK: - Kilit
+    // MARK: - Kilit açma
+
+    private func setDeviceUnlockFlag(_ on: Bool) {
+        deviceUnlockEnabled = on
+        UserDefaults.standard.set(on, forKey: Prefs.deviceUnlock)
+    }
+
+    /// Kilit ekranı göründüğünde veya uygulama öne geldiğinde Face ID'yi kendiliğinden başlatır
+    func autoUnlockIfPossible() {
+        guard phase == .locked, autoPromptArmed, !authInProgress else { return }
+        guard deviceUnlockEnabled || legacyBiometrics else { return }
+        autoPromptArmed = false
+        Task { await unlockWithDevice() }
+    }
+
+    func unlockWithDevice() async {
+        guard phase == .locked, !authInProgress else { return }
+        authInProgress = true
+        defer { authInProgress = false }
+        do {
+            let ctx = try await DeviceAuth.authenticate(reason: "Şifrelerinizi açmak için")
+            if deviceUnlockEnabled {
+                do {
+                    let raw = try DeviceKeychain.load(context: ctx)
+                    try open(with: SymmetricKey(data: raw))
+                    resetFails()
+                    return
+                } catch KasaError.keychain(let status) where status == errSecItemNotFound {
+                    setDeviceUnlockFlag(false)
+                    deviceKeyMissing = true
+                }
+            }
+            if legacyBiometrics {
+                // Önceki sürümden geçiş: eski Face ID anahtarı
+                if let raw = try? LegacyBiometricKeychain.load(context: ctx) {
+                    try open(with: SymmetricKey(data: raw))
+                    migrateToDeviceKey()
+                    return
+                }
+            }
+            if deviceKeyMissing {
+                Toaster.shared.show(hasMaster ? "Cihaz anahtarı bulunamadı. Ana şifrenizle açın." : "Cihaz anahtarı bulunamadı. Yedekten geri yükleyin.", isError: true)
+            } else if !deviceUnlockEnabled {
+                Toaster.shared.show("Face ID ile açma kapalı. Ana şifrenizle açın.", isError: true)
+            }
+        } catch let error as LAError {
+            switch error.code {
+            case .notInteractive, .appCancel, .systemCancel:
+                autoPromptArmed = true
+            default:
+                break
+            }
+        } catch {
+            Toaster.shared.show(error.localizedDescription, isError: true)
+        }
+    }
 
     var lockoutRemaining: TimeInterval {
         let d = UserDefaults.standard
@@ -122,57 +242,78 @@ final class VaultStore: ObservableObject {
     }
 
     func unlock(password: String) async throws {
-        guard let f = file, let salt = Data(base64Encoded: f.salt), let wrapped = Data(base64Encoded: f.wrappedKey) else {
-            throw KasaError.corrupt
+        guard let f = file, let saltStr = f.salt, let salt = Data(base64Encoded: saltStr),
+              let wrappedStr = f.wrappedKey, let wrapped = Data(base64Encoded: wrappedStr) else {
+            throw KasaError.message("Ana şifre tanımlı değil.")
         }
-        let kek = await KasaCrypto.deriveKeyAsync(password: password, salt: salt, iterations: f.iter)
+        let kek = await KasaCrypto.deriveKeyAsync(password: password, salt: salt, iterations: f.iter ?? KasaCrypto.iterations)
+        let raw: Data
         do {
-            let raw = try KasaCrypto.open(wrapped, key: kek)
-            try open(with: SymmetricKey(data: raw))
-            resetFails()
-            selectedTab = .vault
+            raw = try KasaCrypto.open(wrapped, key: kek)
         } catch {
             registerFail()
             throw KasaError.wrongPassword
         }
+        try open(with: SymmetricKey(data: raw))
+        resetFails()
+        if !deviceUnlockEnabled { migrateToDeviceKey() }
     }
 
-    func unlockWithBiometrics() async {
-        guard phase == .locked, biometricsEnabled, !bioInProgress else { return }
-        bioInProgress = true
-        defer { bioInProgress = false }
+    /// Anahtarı Face ID korumalı cihaz anahtarına taşır; sonraki açılışlar otomatik olur
+    private func migrateToDeviceKey() {
+        guard let vk = vaultKey, DeviceAuth.isAvailable else { return }
         do {
-            let ctx = try await BiometricKeychain.authenticate(reason: "Kasanın kilidini açmak için")
-            let raw = try BiometricKeychain.load(context: ctx)
-            try open(with: SymmetricKey(data: raw))
-            resetFails()
-            selectedTab = .vault
-        } catch KasaError.keychain(let status) {
-            // Face ID kayıtları değiştiyse anahtar geçersiz olur; ana şifre ile yeniden açılması gerekir
-            if status == errSecItemNotFound || status == errSecAuthFailed {
-                setBiometrics(false)
-                showToast("Face ID kaydı değişti. Lütfen ana şifreyle açıp yeniden etkinleştirin.", isError: true)
-            }
+            try DeviceKeychain.save(KasaCrypto.keyData(vk))
+            setDeviceUnlockFlag(true)
+            deviceKeyMissing = false
+            LegacyBiometricKeychain.delete()
+            UserDefaults.standard.set(false, forKey: Prefs.legacyBiometrics)
+            persist()
         } catch {
-            // Kullanıcı vazgeçtiyse sessizce ana şifre ekranında kalınır
+            // Sessizce geç; ana şifre ile açmaya devam edilir
         }
     }
 
     func lock() {
         vaultKey = nil
         entries = []
-        busyMessage = nil
+        report = Report()
+        strengthCache.removeAll()
+        Toaster.shared.busy = nil
         if file != nil { phase = .locked }
     }
 
+    func scenePhaseChanged(_ newPhase: ScenePhase) {
+        switch newPhase {
+        case .background:
+            if backgroundAt == nil { backgroundAt = Date() }
+            autoPromptArmed = true
+            if phase == .unlocked && UserDefaults.standard.integer(forKey: Prefs.autoLock) == 0 { lock() }
+        case .active:
+            if let since = backgroundAt, phase == .unlocked {
+                let limit = UserDefaults.standard.integer(forKey: Prefs.autoLock)
+                if limit >= 0 && Date().timeIntervalSince(since) >= Double(limit) { lock() }
+            }
+            backgroundAt = nil
+            autoUnlockIfPossible()
+        default:
+            break
+        }
+    }
+
+    // MARK: - Ana şifre (kurtarma şifresi) yönetimi
+
     func verifyMaster(_ password: String) async -> Bool {
-        guard let f = file, let salt = Data(base64Encoded: f.salt), let wrapped = Data(base64Encoded: f.wrappedKey) else { return false }
-        let kek = await KasaCrypto.deriveKeyAsync(password: password, salt: salt, iterations: f.iter)
+        guard let f = file, let saltStr = f.salt, let salt = Data(base64Encoded: saltStr),
+              let wrappedStr = f.wrappedKey, let wrapped = Data(base64Encoded: wrappedStr) else { return false }
+        let kek = await KasaCrypto.deriveKeyAsync(password: password, salt: salt, iterations: f.iter ?? KasaCrypto.iterations)
         return (try? KasaCrypto.open(wrapped, key: kek)) != nil
     }
 
-    func changeMaster(current: String, new: String) async throws {
-        guard await verifyMaster(current) else { throw KasaError.wrongPassword }
+    func setMaster(current: String?, new: String) async throws {
+        if hasMaster {
+            guard let current, await verifyMaster(current) else { throw KasaError.wrongPassword }
+        }
         guard var f = file, let vk = vaultKey else { throw KasaError.corrupt }
         let salt = KasaCrypto.randomBytes(16)
         let kek = await KasaCrypto.deriveKeyAsync(password: new, salt: salt, iterations: KasaCrypto.iterations)
@@ -180,60 +321,68 @@ final class VaultStore: ObservableObject {
         f.iter = KasaCrypto.iterations
         f.wrappedKey = try KasaCrypto.seal(KasaCrypto.keyData(vk), key: kek).base64
         file = f
-        try save()
+        hasMaster = true
+        persist()
+    }
+
+    func removeMaster(current: String) async throws {
+        guard deviceUnlockEnabled else {
+            throw KasaError.message("Ana şifreyi kaldırmak için önce Face ID ile açmayı etkinleştirin.")
+        }
+        guard await verifyMaster(current) else { throw KasaError.wrongPassword }
+        guard var f = file else { return }
+        f.salt = nil
+        f.iter = nil
+        f.wrappedKey = nil
+        f.hint = ""
+        file = f
+        hasMaster = false
+        persist()
     }
 
     func setHint(_ hint: String) {
         file?.hint = hint
-        saveOrToast()
+        persist()
     }
 
-    func setBiometrics(_ on: Bool) {
+    func setDeviceUnlock(_ on: Bool) async {
         if on {
             guard let vk = vaultKey else { return }
             do {
-                try BiometricKeychain.save(KasaCrypto.keyData(vk))
-                biometricsEnabled = true
+                _ = try await DeviceAuth.authenticate(reason: "Face ID ile açmayı etkinleştirmek için")
+                try DeviceKeychain.save(KasaCrypto.keyData(vk))
+                setDeviceUnlockFlag(true)
+                deviceKeyMissing = false
+                Toaster.shared.show("\(DeviceAuth.name) ile açma etkinleştirildi")
+            } catch let error as LAError where error.code == .userCancel {
+                // vazgeçildi
             } catch {
-                biometricsEnabled = false
-                showToast(error.localizedDescription, isError: true)
+                Toaster.shared.show(error.localizedDescription, isError: true)
             }
         } else {
-            BiometricKeychain.delete()
-            biometricsEnabled = false
-        }
-        UserDefaults.standard.set(biometricsEnabled, forKey: Prefs.biometrics)
-    }
-
-    func scenePhaseChanged(_ newPhase: ScenePhase) {
-        switch newPhase {
-        case .background:
-            if backgroundAt == nil { backgroundAt = Date() }
-            if phase == .unlocked && UserDefaults.standard.integer(forKey: Prefs.autoLock) == 0 { lock() }
-        case .active:
-            let wasInBackground = backgroundAt != nil
-            if let since = backgroundAt, phase == .unlocked {
-                let limit = UserDefaults.standard.integer(forKey: Prefs.autoLock)
-                if limit >= 0 && Date().timeIntervalSince(since) >= Double(limit) { lock() }
+            guard hasMaster else {
+                Toaster.shared.show("Kapatmadan önce bir ana şifre belirleyin; aksi halde uygulamayı açamazsınız.", isError: true)
+                return
             }
-            backgroundAt = nil
-            if wasInBackground && phase == .locked && biometricsEnabled {
-                Task { await unlockWithBiometrics() }
-            }
-        default:
-            break
+            DeviceKeychain.delete()
+            setDeviceUnlockFlag(false)
         }
     }
 
     func wipe() {
-        try? FileManager.default.removeItem(at: fileURL)
-        BiometricKeychain.delete()
-        UserDefaults.standard.set(false, forKey: Prefs.biometrics)
-        biometricsEnabled = false
+        let url = fileURL
+        ioQueue.async { try? FileManager.default.removeItem(at: url) }
+        DeviceKeychain.delete()
+        LegacyBiometricKeychain.delete()
+        UserDefaults.standard.set(false, forKey: Prefs.legacyBiometrics)
+        setDeviceUnlockFlag(false)
         resetFails()
         vaultKey = nil
         file = nil
+        hasMaster = false
+        deviceKeyMissing = false
         entries = []
+        report = Report()
         lastBackup = 0
         phase = .setup
     }
@@ -261,31 +410,35 @@ final class VaultStore: ObservableObject {
             item.pwChangedAt = now
             entries.append(item)
         }
-        saveOrToast()
+        entriesChanged()
     }
 
     func toggleFavorite(_ id: String) {
         guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
         entries[i].favorite.toggle()
-        saveOrToast()
+        persist()
         Haptics.tap()
     }
 
     func delete(_ id: String) {
         guard let i = entries.firstIndex(where: { $0.id == id }) else { return }
         let removed = entries.remove(at: i)
-        saveOrToast()
-        showToast("“\(removed.title)” silindi", action: ToastAction(title: "Geri al") { [weak self] in
+        entriesChanged()
+        Toaster.shared.show("“\(removed.title)” silindi", action: ToastAction(title: "Geri al") { [weak self] in
             guard let self, self.phase == .unlocked else { return }
             self.entries.insert(removed, at: min(i, self.entries.count))
-            self.saveOrToast()
+            self.entriesChanged()
+            Toaster.shared.dismiss()
         })
     }
 
-    // MARK: - Yedekleme (web sürümüyle uyumlu)
+    // MARK: - Yedekleme
 
+    /// Yedek dosyası oluşturur. Ana şifre varsa onu doğrular; yoksa verilen şifre yedek şifresi olur.
     func makeBackup(password: String) async throws -> URL {
-        guard await verifyMaster(password) else { throw KasaError.wrongPassword }
+        if hasMaster {
+            guard await verifyMaster(password) else { throw KasaError.wrongPassword }
+        }
         let salt = KasaCrypto.randomBytes(16)
         let key = await KasaCrypto.deriveKeyAsync(password: password, salt: salt, iterations: KasaCrypto.iterations)
         let now = Entry.nowMs()
@@ -294,9 +447,9 @@ final class VaultStore: ObservableObject {
         let record = BackupRecord(app: "kasa", v: 1, kdf: "PBKDF2-SHA256", iter: KasaCrypto.iterations, salt: salt.base64,
                                   hint: hint, iv: sealed.iv.base64, ct: sealed.ct.base64, createdAt: now, updatedAt: now)
         let data = try JSONEncoder().encode(record)
-        let url = try ShareHelper.writeTemp(name: "kasa-yedek-\(DateText.stamp()).json", data: data)
+        let url = try ShareHelper.writeTemp(name: "sifrelerim-yedek-\(DateText.stamp()).json", data: data)
         lastBackup = now
-        saveOrToast()
+        persist()
         return url
     }
 
@@ -311,7 +464,6 @@ final class VaultStore: ObservableObject {
         return (payload.entries, rec.hint ?? "")
     }
 
-    /// Yedekteki kayıtları mevcut kasayla birleştirir
     func mergeBackup(data: Data, password: String) async throws -> (added: Int, updated: Int) {
         let result = try await VaultStore.readBackup(data: data, password: password)
         var added = 0, updated = 0
@@ -322,14 +474,14 @@ final class VaultStore: ObservableObject {
                 entries.append(e); added += 1
             }
         }
-        saveOrToast()
+        entriesChanged()
         return (added, updated)
     }
 
-    /// Boş cihazda yedekten yeni kasa oluşturur (ana şifre = yedeğin şifresi)
+    /// Boş cihazda yedekten yeni kasa oluşturur (yedeğin şifresi ana şifre olur)
     func restoreBackup(data: Data, password: String) async throws -> Int {
         let result = try await VaultStore.readBackup(data: data, password: password)
-        try await createVault(password: password, hint: result.hint, entries: result.entries)
+        try await createVault(masterPassword: password, hint: result.hint, entries: result.entries)
         return result.entries.count
     }
 
@@ -381,7 +533,7 @@ final class VaultStore: ObservableObject {
                                  createdAt: now, updatedAt: now, pwChangedAt: now))
             added += 1
         }
-        saveOrToast()
+        entriesChanged()
         return (added, skipped)
     }
 
@@ -391,62 +543,6 @@ final class VaultStore: ObservableObject {
             lines.append([e.title, e.url, e.username, e.password, e.notes, TOTP.uri(for: e)].map(CSV.escape).joined(separator: ","))
         }
         let text = "\u{FEFF}" + lines.joined(separator: "\r\n")
-        return try ShareHelper.writeTemp(name: "kasa-sifreler-\(DateText.stamp()).csv", data: Data(text.utf8))
+        return try ShareHelper.writeTemp(name: "sifrelerim-\(DateText.stamp()).csv", data: Data(text.utf8))
     }
-
-    // MARK: - Güvenlik analizi
-
-    struct Report {
-        var total = 0
-        var weak: [Entry] = []
-        var reused: [Entry] = []
-        var old: [Entry] = []
-        var problemCount = 0
-        var score = 0
-        var with2FA = 0
-    }
-
-    var report: Report {
-        var r = Report()
-        let withPw = entries.filter { !$0.password.isEmpty }
-        r.total = withPw.count
-        var counts: [String: Int] = [:]
-        for e in withPw { counts[e.password, default: 0] += 1 }
-        let yearMs = 365.0 * 86_400_000
-        let now = Entry.nowMs()
-        r.weak = withPw.filter { Strength.of($0.password).score <= 1 }
-        r.reused = withPw.filter { (counts[$0.password] ?? 0) > 1 }
-        r.old = withPw.filter { now - $0.pwChangedAt > yearMs }
-        let bad = Set((r.weak + r.reused + r.old).map(\.id))
-        r.problemCount = bad.count
-        r.score = r.total == 0 ? 0 : Int((Double(r.total - bad.count) / Double(r.total) * 100).rounded())
-        r.with2FA = entries.filter { !$0.totp.isEmpty }.count
-        return r
-    }
-
-    // MARK: - Bildirimler
-
-    func showToast(_ text: String, isError: Bool = false, action: ToastAction? = nil) {
-        let t = ToastMessage(text: text, isError: isError, action: action)
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { toast = t }
-        if isError { Haptics.error() }
-        let delay: UInt64 = action == nil ? 2_300_000_000 : 4_500_000_000
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: delay)
-            guard let self, self.toast?.id == t.id else { return }
-            withAnimation(.easeOut(duration: 0.25)) { self.toast = nil }
-        }
-    }
-}
-
-struct ToastAction {
-    let title: String
-    let run: @MainActor () -> Void
-}
-
-struct ToastMessage: Identifiable {
-    let id = UUID()
-    let text: String
-    let isError: Bool
-    let action: ToastAction?
 }

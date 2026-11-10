@@ -1,7 +1,11 @@
 import Foundation
 import SwiftUI
 
-/// Kayıt kategorileri (web sürümüyle aynı kimlikler)
+enum AppInfo {
+    static let name = "Şifrelerim"
+}
+
+/// Kayıt kategorileri
 enum EntryCategory: String, Codable, CaseIterable, Identifiable, Hashable {
     case genel
     case sosyal
@@ -29,33 +33,44 @@ enum EntryCategory: String, Codable, CaseIterable, Identifiable, Hashable {
         }
     }
 
+    var shortName: String {
+        switch self {
+        case .finans: return "Finans"
+        case .eglence: return "Eğlence"
+        case .cihaz: return "Wi-Fi & Cihaz"
+        default: return name
+        }
+    }
+
     var icon: String {
         switch self {
         case .genel: return "key.fill"
-        case .sosyal: return "person.2.fill"
+        case .sosyal: return "bubble.left.and.bubble.right.fill"
         case .eposta: return "envelope.fill"
         case .finans: return "creditcard.fill"
         case .isler: return "briefcase.fill"
         case .alisveris: return "bag.fill"
-        case .eglence: return "gamecontroller.fill"
+        case .eglence: return "play.rectangle.fill"
         case .cihaz: return "wifi"
         case .diger: return "square.grid.2x2.fill"
         }
     }
 
-    var color: Color {
+    var colors: [Color] {
         switch self {
-        case .genel: return Color(hex: 0x8B6CFF)
-        case .sosyal: return Color(hex: 0xFF4F86)
-        case .eposta: return Color(hex: 0x3F8CFF)
-        case .finans: return Color(hex: 0x22C06F)
-        case .isler: return Color(hex: 0xF5A524)
-        case .alisveris: return Color(hex: 0xFF7440)
-        case .eglence: return Color(hex: 0xB55CFF)
-        case .cihaz: return Color(hex: 0x17B5CC)
-        case .diger: return Color(hex: 0x7C7C8E)
+        case .genel: return [Color(hex: 0x8B6CFF), Color(hex: 0x5B3DF5)]
+        case .sosyal: return [Color(hex: 0xFF5C93), Color(hex: 0xE0306E)]
+        case .eposta: return [Color(hex: 0x4D9BFF), Color(hex: 0x2A6DF0)]
+        case .finans: return [Color(hex: 0x2FD58A), Color(hex: 0x13A866)]
+        case .isler: return [Color(hex: 0xFFB648), Color(hex: 0xF08A1C)]
+        case .alisveris: return [Color(hex: 0xFF8A50), Color(hex: 0xF25A22)]
+        case .eglence: return [Color(hex: 0xC77DFF), Color(hex: 0x9B4DF0)]
+        case .cihaz: return [Color(hex: 0x33D1E6), Color(hex: 0x119DB8)]
+        case .diger: return [Color(hex: 0x9A9AB0), Color(hex: 0x6E6E86)]
         }
     }
+
+    var color: Color { colors[0] }
 }
 
 struct PasswordHistoryItem: Codable, Hashable {
@@ -63,7 +78,7 @@ struct PasswordHistoryItem: Codable, Hashable {
     var changedAt: Double
 }
 
-/// Tek bir şifre kaydı. Zaman damgaları milisaniye cinsindendir (web sürümüyle uyumlu yedekler için).
+/// Tek bir şifre kaydı. Zaman damgaları milisaniye cinsindendir (yedek dosyalarıyla uyumlu).
 struct Entry: Codable, Identifiable, Hashable {
     var id: String
     var title: String
@@ -152,7 +167,7 @@ struct Entry: Codable, Identifiable, Hashable {
     }
 }
 
-/// Şifrelenmiş olarak saklanan kasa içeriği
+/// Şifrelenmiş olarak saklanan içerik
 struct VaultData: Codable {
     var entries: [Entry] = []
     var lastBackup: Double = 0
@@ -171,18 +186,21 @@ struct VaultData: Codable {
     }
 }
 
-/// Cihazda saklanan kasa dosyası
+/// Cihazda saklanan dosya. Ana şifre (kurtarma şifresi) isteğe bağlıdır;
+/// varsa veri anahtarı bu şifreyle de sarılır.
 struct VaultFile: Codable {
-    var v: Int = 1
-    var salt: String
-    var iter: Int
-    var wrappedKey: String
+    var v: Int = 2
     var data: String
-    var hint: String
     var createdAt: Double
+    var hint: String
+    var salt: String?
+    var iter: Int?
+    var wrappedKey: String?
+
+    var hasMaster: Bool { wrappedKey != nil && salt != nil }
 }
 
-/// Web sürümüyle uyumlu şifreli yedek dosyası
+/// Şifreli yedek dosyası (web sürümüyle uyumlu)
 struct BackupRecord: Codable {
     var app: String
     var v: Int?
@@ -214,10 +232,11 @@ struct BackupPayload: Codable {
     }
 }
 
-/// Kullanıcı tercihleri (hassas olmayan, UserDefaults'ta tutulur)
+/// Hassas olmayan tercihler (UserDefaults)
 enum Prefs {
     static let theme = "pref.theme"                 // 0 sistem, 1 koyu, 2 açık
-    static let biometrics = "pref.biometrics"
+    static let legacyBiometrics = "pref.biometrics" // eski sürüm
+    static let deviceUnlock = "pref.deviceUnlock"   // Face ID / iPhone parolası ile açma
     static let autoLock = "pref.autoLock"           // saniye; 0 = hemen, -1 = asla
     static let clipboard = "pref.clipboard"         // saniye; 0 = kapalı
     static let sort = "pref.sort"                   // "az" | "recent"
@@ -233,7 +252,8 @@ enum Prefs {
     static func register() {
         UserDefaults.standard.register(defaults: [
             theme: 0,
-            biometrics: false,
+            legacyBiometrics: false,
+            deviceUnlock: false,
             autoLock: 60,
             clipboard: 30,
             sort: "az",
@@ -266,25 +286,4 @@ struct GenOptions {
     var digits: Bool
     var symbols: Bool
     var noAmbig: Bool
-}
-
-extension Color {
-    init(hex: UInt32, alpha: Double = 1) {
-        self.init(.sRGB,
-                  red: Double((hex >> 16) & 0xFF) / 255,
-                  green: Double((hex >> 8) & 0xFF) / 255,
-                  blue: Double(hex & 0xFF) / 255,
-                  opacity: alpha)
-    }
-
-    static let kasaAccent = Color(hex: 0x7B5CFF)
-    static let kasaAccent2 = Color(hex: 0x3F7DFF)
-    static let kasaDanger = Color(hex: 0xFF4D5E)
-    static let kasaOK = Color(hex: 0x22C06F)
-    static let kasaWarn = Color(hex: 0xF5A524)
-}
-
-extension LinearGradient {
-    static let kasa = LinearGradient(colors: [Color(hex: 0x8B6CFF), Color(hex: 0x3F7DFF)],
-                                     startPoint: .topLeading, endPoint: .bottomTrailing)
 }

@@ -9,16 +9,16 @@ enum KasaError: LocalizedError {
     case corrupt
     case invalidBackup
     case keychain(OSStatus)
-    case biometryUnavailable
+    case deviceAuthUnavailable
     case message(String)
 
     var errorDescription: String? {
         switch self {
         case .wrongPassword: return "Şifre hatalı."
-        case .corrupt: return "Kasa dosyası okunamadı."
-        case .invalidBackup: return "Bu dosya bir Kasa yedeği değil."
+        case .corrupt: return "Veri dosyası okunamadı."
+        case .invalidBackup: return "Bu dosya bir Şifrelerim yedeği değil."
         case .keychain(let s): return "Anahtar Zinciri hatası (\(s))."
-        case .biometryUnavailable: return "Face ID / Touch ID bu cihazda kullanılamıyor. Telefonda bir parola ve Face ID tanımlı olmalı."
+        case .deviceAuthUnavailable: return "Bu iPhone'da parola tanımlı değil. Face ID ile açmak için iPhone Ayarlar'dan bir parola belirleyin."
         case .message(let m): return m
         }
     }
@@ -75,7 +75,7 @@ enum KasaCrypto {
         key.withUnsafeBytes { Data($0) }
     }
 
-    // MARK: Web uyumlu yedek biçimi (iv + ciphertext||tag)
+    // MARK: Yedek biçimi (iv + ciphertext||tag)
 
     static func sealWebFormat(_ data: Data, key: SymmetricKey) throws -> (iv: Data, ct: Data) {
         let nonce = AES.GCM.Nonce()
@@ -92,43 +92,61 @@ enum KasaCrypto {
     }
 }
 
-/// Kasa anahtarını Face ID / Touch ID korumalı olarak Anahtar Zinciri'nde saklar
-enum BiometricKeychain {
-    private static let service = "kasa.vault.key"
-    private static let account = "vault"
-
-    static var biometryType: LABiometryType {
+/// Face ID / Touch ID / iPhone parolası bilgileri (bir kez hesaplanır)
+enum DeviceAuth {
+    static let biometryType: LABiometryType = {
         let ctx = LAContext()
         var err: NSError?
         _ = ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &err)
         return ctx.biometryType
-    }
+    }()
 
     static var isAvailable: Bool {
         var err: NSError?
-        return LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &err)
+        return LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: &err)
     }
 
-    static var displayName: String {
+    static var name: String {
         switch biometryType {
         case .touchID: return "Touch ID"
         case .faceID: return "Face ID"
-        default: return "Face ID"
+        default: return "iPhone parolası"
         }
     }
 
-    static var iconName: String {
-        biometryType == .touchID ? "touchid" : "faceid"
+    static var icon: String {
+        switch biometryType {
+        case .touchID: return "touchid"
+        case .faceID: return "faceid"
+        default: return "lock.iphone"
+        }
     }
+
+    /// Face ID ister; başarısız olursa iOS kendiliğinden iPhone parolasını önerir
+    static func authenticate(reason: String) async throws -> LAContext {
+        let ctx = LAContext()
+        ctx.localizedCancelTitle = "Vazgeç"
+        var err: NSError?
+        guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &err) else { throw KasaError.deviceAuthUnavailable }
+        _ = try await ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
+        return ctx
+    }
+}
+
+/// Veri anahtarını Anahtar Zinciri'nde, Face ID veya iPhone parolası olmadan okunamayacak şekilde saklar.
+/// Yalnızca bu cihazda tutulur, iCloud'a veya yedeğe gitmez.
+enum DeviceKeychain {
+    private static let service = "kasa.vault.devicekey"
+    private static let account = "vault"
 
     static func save(_ key: Data) throws {
         delete()
         var cfError: Unmanaged<CFError>?
         guard let access = SecAccessControlCreateWithFlags(nil,
                                                            kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
-                                                           .biometryCurrentSet,
+                                                           .userPresence,
                                                            &cfError) else {
-            throw KasaError.biometryUnavailable
+            throw KasaError.deviceAuthUnavailable
         }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -138,7 +156,10 @@ enum BiometricKeychain {
             kSecAttrAccessControl as String: access,
         ]
         let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else { throw KasaError.keychain(status) }
+        guard status == errSecSuccess else {
+            if status == errSecAuthFailed || status == errSecNotAvailable { throw KasaError.deviceAuthUnavailable }
+            throw KasaError.keychain(status)
+        }
     }
 
     static func load(context: LAContext) throws -> Data {
@@ -164,17 +185,35 @@ enum BiometricKeychain {
         ]
         SecItemDelete(query as CFDictionary)
     }
+}
 
-    static func authenticate(reason: String) async throws -> LAContext {
-        let ctx = LAContext()
-        ctx.localizedFallbackTitle = "Ana şifreyi kullan"
-        ctx.localizedCancelTitle = "Vazgeç"
-        var err: NSError?
-        guard ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &err) else {
-            throw KasaError.biometryUnavailable
-        }
-        _ = try await ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason)
-        return ctx
+/// Önceki sürümün Face ID anahtarı (yalnızca geçiş için okunur)
+enum LegacyBiometricKeychain {
+    private static let service = "kasa.vault.key"
+    private static let account = "vault"
+
+    static func load(context: LAContext) throws -> Data {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationContext as String: context,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess, let data = result as? Data else { throw KasaError.keychain(status) }
+        return data
+    }
+
+    static func delete() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(query as CFDictionary)
     }
 }
 

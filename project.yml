@@ -8,8 +8,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "1.1.0"
+    CURRENT_PROJECT_VERSION: "2"
     IPHONEOS_DEPLOYMENT_TARGET: "16.0"
 targets:
   Kasa:
@@ -23,9 +23,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.kemaldonmez.kasa
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Kasa
+        INFOPLIST_KEY_CFBundleDisplayName: "Şifrelerim"
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.utilities
-        INFOPLIST_KEY_NSFaceIDUsageDescription: "Kasanın kilidini Face ID ile hızlıca açmak için kullanılır."
+        INFOPLIST_KEY_NSFaceIDUsageDescription: "Şifrelerinizi Face ID ile şifre girmeden, anında açmak için kullanılır."
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UIRequiresFullScreen: YES

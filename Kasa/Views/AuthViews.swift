@@ -1,93 +1,67 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import LocalAuthentication
 
 // MARK: - İlk kurulum
 
 struct SetupView: View {
     @EnvironmentObject private var store: VaultStore
+    @State private var wantsMaster = false
     @State private var password = ""
     @State private var confirm = ""
     @State private var hint = ""
     @State private var busy = false
     @State private var error: String?
-    @State private var showWeakAlert = false
     @State private var showImporter = false
     @State private var backupData: Data?
     @State private var backupPassword = ""
     @State private var showBackupPassword = false
 
+    private let deviceAvailable = DeviceAuth.isAvailable
+    private var needsMaster: Bool { !deviceAvailable || wantsMaster }
+
     var body: some View {
         ZStack {
-            AuthBackground()
+            AppBackground()
             ScrollView {
-                VStack(spacing: 16) {
-                    VStack(spacing: 14) {
-                        LogoView(size: 88)
-                        Text("Kasa'ya hoş geldiniz")
-                            .font(.largeTitle.weight(.bold))
-                            .multilineTextAlignment(.center)
-                        Text("Tüm şifreleriniz tek bir ana şifreyle korunur. Veriler yalnızca bu iPhone'da, AES-256 ile şifrelenmiş olarak saklanır.")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(.top, 36)
-                    .padding(.bottom, 10)
-
-                    fieldLabel("Ana şifre")
-                    AuthField { SecureInput(placeholder: "En az 8 karakter", text: $password) }
-                    StrengthBar(password: password)
-                    fieldLabel("Ana şifre (tekrar)")
-                    AuthField {
-                        SecureField("Şifreyi tekrar girin", text: $confirm)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled(true)
-                    }
-                    fieldLabel("İpucu (isteğe bağlı)")
-                    AuthField { TextField("Şifrenin kendisini yazmayın", text: $hint) }
-
-                    HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.kasaWarn)
-                        Text("**Önemli:** Ana şifrenizi unutursanız verilerinizi kurtarmanın hiçbir yolu yoktur. Güçlü ama hatırlayabileceğiniz bir şifre seçin.")
-                            .font(.footnote)
-                    }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.kasaWarn.opacity(0.12)))
-
+                VStack(spacing: 22) {
+                    hero
+                    features
+                    masterSection
                     if let error {
-                        Text(error).font(.footnote.weight(.semibold)).foregroundColor(.kasaDanger)
+                        Text(error)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(Color.kasaDanger)
+                            .multilineTextAlignment(.center)
                     }
-
                     Button {
-                        submit(force: false)
+                        submit()
                     } label: {
-                        if busy { ProgressView().tint(.white) } else { Text("Kasayı oluştur") }
+                        HStack(spacing: 10) {
+                            if busy {
+                                ProgressView().tint(.white)
+                            } else {
+                                Image(systemName: deviceAvailable ? DeviceAuth.icon : "lock.fill")
+                                Text(deviceAvailable ? "\(DeviceAuth.name) ile başla" : "Başla")
+                            }
+                        }
                     }
                     .buttonStyle(PrimaryButtonStyle())
                     .disabled(busy)
-                    .padding(.top, 4)
 
                     Button {
                         showImporter = true
                     } label: {
-                        Label("Yedekten geri yükle", systemImage: "square.and.arrow.down")
+                        Label("Yedekten geri yükle", systemImage: "arrow.down.doc")
                             .font(.subheadline.weight(.semibold))
                     }
-                    .padding(.vertical, 8)
+                    .padding(.bottom, 24)
                 }
                 .padding(.horizontal, 22)
-                .padding(.bottom, 30)
                 .frame(maxWidth: 480)
                 .frame(maxWidth: .infinity)
             }
             .scrollDismissesKeyboard(.interactively)
-        }
-        .alert("Zayıf ana şifre", isPresented: $showWeakAlert) {
-            Button("Değiştir", role: .cancel) {}
-            Button("Yine de devam", role: .destructive) { submit(force: true) }
-        } message: {
-            Text("Bu şifre kolay tahmin edilebilir. Daha uzun bir şifre ya da birkaç kelimeden oluşan bir cümle öneririz.")
         }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json, .data]) { result in
             if case .success(let url) = result, let data = FileAccess.read(url) {
@@ -97,37 +71,116 @@ struct SetupView: View {
             }
         }
         .alert("Yedeğin şifresi", isPresented: $showBackupPassword) {
-            SecureField("Ana şifre", text: $backupPassword)
+            SecureField("Şifre", text: $backupPassword)
             Button("Vazgeç", role: .cancel) {}
             Button("Geri yükle") { restore() }
         } message: {
-            Text("Bu yedeği alırken kullandığınız ana şifreyi girin. Bu şifre yeni kasanızın ana şifresi olur.")
+            Text("Bu yedeği alırken kullandığınız şifreyi girin.")
         }
     }
 
-    private func fieldLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.footnote.weight(.semibold))
-            .foregroundColor(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.leading, 4)
-            .padding(.bottom, -8)
+    private var hero: some View {
+        VStack(spacing: 16) {
+            ZStack {
+                Circle()
+                    .fill(RadialGradient(colors: [Color.kasaAccent.opacity(0.45), .clear], center: .center, startRadius: 10, endRadius: 110))
+                    .frame(width: 220, height: 220)
+                LogoView(size: 96)
+            }
+            .frame(height: 170)
+            Text("\(AppInfo.name)'e hoş geldiniz")
+                .font(.system(size: 30, weight: .bold))
+                .multilineTextAlignment(.center)
+            Text("Tüm şifreleriniz tek bir yerde. \(DeviceAuth.name) ile anında açılır, internet olmadan çalışır.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.top, 20)
     }
 
-    private func submit(force: Bool) {
+    private var features: some View {
+        VStack(spacing: 0) {
+            featureRow(DeviceAuth.icon, [Color(hex: 0x7C5CFF), Color(hex: 0x5B3DF5)], "\(DeviceAuth.name) ile otomatik giriş", "Uygulamayı açtığınızda şifre sormaz")
+            Divider().padding(.leading, 62)
+            featureRow("wifi.slash", [Color(hex: 0x2FD58A), Color(hex: 0x13A866)], "Tamamen çevrimdışı", "Veriler yalnızca bu iPhone'da durur")
+            Divider().padding(.leading, 62)
+            featureRow("lock.shield.fill", [Color(hex: 0x4D9BFF), Color(hex: 0x2A6DF0)], "AES-256 şifreleme", "Bankaların kullandığı düzeyde koruma")
+        }
+        .card(padding: 6)
+    }
+
+    private func featureRow(_ icon: String, _ colors: [Color], _ title: String, _ subtitle: String) -> some View {
+        HStack(spacing: 14) {
+            IconBadge(systemName: icon, colors: colors, size: 38)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.subheadline.weight(.semibold))
+                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(12)
+    }
+
+    @ViewBuilder
+    private var masterSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if deviceAvailable {
+                Toggle(isOn: $wantsMaster.animation(.easeInOut(duration: 0.2))) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Kurtarma şifresi de belirle").font(.subheadline.weight(.semibold))
+                        Text("Önerilir. Telefon değişirse ya da Face ID kullanılamazsa bu şifreyle açarsınız.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .tint(.kasaAccent)
+            } else {
+                Label("iPhone'unuzda parola tanımlı olmadığı için bir ana şifre belirlemeniz gerekiyor.", systemImage: "info.circle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if needsMaster {
+                VStack(spacing: 10) {
+                    AuthField { SecureInput(placeholder: "Şifre (en az 8 karakter)", text: $password) }
+                    if !password.isEmpty { StrengthBar(password: password).padding(.horizontal, 4) }
+                    AuthField {
+                        SecureField("Şifre (tekrar)", text: $confirm)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled(true)
+                    }
+                    AuthField { TextField("İpucu (isteğe bağlı)", text: $hint) }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .card()
+    }
+
+    private func submit() {
         error = nil
+        var master: String?
         let trimmedHint = hint.trimmingCharacters(in: .whitespaces)
-        guard password.count >= 8 else { error = "Ana şifre en az 8 karakter olmalı."; Haptics.error(); return }
-        guard password == confirm else { error = "Şifreler eşleşmiyor."; Haptics.error(); return }
-        if !trimmedHint.isEmpty && trimmedHint.lowercased().contains(password.lowercased()) {
-            error = "İpucu şifrenin kendisini içeremez."; return
+        if needsMaster {
+            guard password.count >= 8 else { error = "Şifre en az 8 karakter olmalı."; Haptics.error(); return }
+            guard password == confirm else { error = "Şifreler eşleşmiyor."; Haptics.error(); return }
+            guard Strength.of(password).score >= 2 else { error = "Bu şifre çok kolay tahmin edilir. Daha uzun bir şifre seçin."; Haptics.error(); return }
+            if !trimmedHint.isEmpty && trimmedHint.lowercased().contains(password.lowercased()) {
+                error = "İpucu şifrenin kendisini içeremez."; return
+            }
+            master = password
         }
-        if !force && Strength.of(password).score < 2 { showWeakAlert = true; return }
         busy = true
         Task {
             do {
-                try await store.createVault(password: password, hint: trimmedHint)
-                store.showToast("Kasanız hazır")
+                if deviceAvailable {
+                    // Face ID iznini ve çalıştığını en baştan doğrula
+                    _ = try await DeviceAuth.authenticate(reason: "Şifrelerinizi Face ID ile korumak için")
+                }
+                try await store.createVault(masterPassword: master, hint: master == nil ? "" : trimmedHint)
+                Toaster.shared.show("Hazırsınız! İlk şifrenizi ekleyin.")
+            } catch let e as LAError where e.code == .userCancel || e.code == .appCancel || e.code == .systemCancel {
+                // vazgeçildi
             } catch {
                 self.error = error.localizedDescription
             }
@@ -138,15 +191,15 @@ struct SetupView: View {
     private func restore() {
         guard let data = backupData else { return }
         let pw = backupPassword
-        store.busyMessage = "Yedek çözülüyor…"
+        Toaster.shared.busy = "Yedek çözülüyor…"
         Task {
             do {
                 let n = try await store.restoreBackup(data: data, password: pw)
-                store.busyMessage = nil
-                store.showToast("\(n) kayıt geri yüklendi")
+                Toaster.shared.busy = nil
+                Toaster.shared.show("\(n) kayıt geri yüklendi")
             } catch {
-                store.busyMessage = nil
-                store.showToast(error.localizedDescription, isError: true)
+                Toaster.shared.busy = nil
+                Toaster.shared.show(error.localizedDescription, isError: true)
             }
         }
     }
@@ -156,107 +209,156 @@ struct SetupView: View {
 
 struct LockView: View {
     @EnvironmentObject private var store: VaultStore
+    @Environment(\.scenePhase) private var scenePhase
     @State private var password = ""
     @State private var error: String?
     @State private var busy = false
     @State private var attempts: CGFloat = 0
+    @State private var showPasswordField = false
+    @State private var revealPassword = false
     @State private var showHint = false
     @State private var showForgot = false
     @State private var showResetConfirm = false
     @State private var resetText = ""
-    @State private var showPassword = false
+    @State private var glow = false
     @FocusState private var focused: Bool
+
+    private var canUseDevice: Bool { store.deviceUnlockEnabled || store.legacyBiometrics }
+    private var passwordVisible: Bool { store.hasMaster && (showPasswordField || !canUseDevice) }
 
     var body: some View {
         ZStack {
-            AuthBackground()
-            VStack(spacing: 18) {
-                Spacer()
-                LogoView(size: 88)
-                VStack(spacing: 6) {
-                    Text("Kasa kilitli").font(.largeTitle.weight(.bold))
-                    Text("Devam etmek için ana şifrenizi girin.")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+            AppBackground()
+            VStack(spacing: 20) {
+                Spacer(minLength: 30)
+                ZStack {
+                    Circle()
+                        .fill(RadialGradient(colors: [Color.kasaAccent.opacity(0.5), .clear], center: .center, startRadius: 5, endRadius: 100))
+                        .frame(width: 200, height: 200)
+                        .scaleEffect(glow ? 1.08 : 0.92)
+                        .opacity(glow ? 1 : 0.7)
+                    LogoView(size: 92)
                 }
-                .padding(.bottom, 8)
+                .frame(height: 170)
+                VStack(spacing: 6) {
+                    Text(AppInfo.name).font(.system(size: 32, weight: .bold))
+                    Label("Kilitli · Çevrimdışı", systemImage: "lock.fill")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
 
-                AuthField {
-                    HStack(spacing: 8) {
-                        Group {
-                            if showPassword {
-                                TextField("Ana şifre", text: $password)
-                            } else {
-                                SecureField("Ana şifre", text: $password)
+                if canUseDevice {
+                    Button {
+                        Task { await store.unlockWithDevice() }
+                    } label: {
+                        VStack(spacing: 10) {
+                            ZStack {
+                                Circle().fill(Color.surface)
+                                Circle().strokeBorder(LinearGradient.kasa, lineWidth: 2)
+                                if store.authInProgress {
+                                    ProgressView()
+                                } else {
+                                    Image(systemName: DeviceAuth.icon)
+                                        .font(.system(size: 34, weight: .regular))
+                                        .foregroundStyle(LinearGradient.kasa)
+                                }
+                            }
+                            .frame(width: 84, height: 84)
+                            Text("\(DeviceAuth.name) ile aç").font(.subheadline.weight(.semibold))
+                        }
+                    }
+                    .buttonStyle(PressableStyle())
+                    .padding(.top, 12)
+                }
+
+                if passwordVisible {
+                    VStack(spacing: 12) {
+                        AuthField {
+                            HStack(spacing: 8) {
+                                Group {
+                                    if revealPassword {
+                                        TextField("Ana şifre", text: $password)
+                                    } else {
+                                        SecureField("Ana şifre", text: $password)
+                                    }
+                                }
+                                .focused($focused)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled(true)
+                                .submitLabel(.go)
+                                .onSubmit { submit() }
+                                Button { revealPassword.toggle() } label: {
+                                    Image(systemName: revealPassword ? "eye.slash" : "eye").foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.borderless)
                             }
                         }
-                        .focused($focused)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled(true)
-                        .submitLabel(.go)
-                        .onSubmit { submit() }
-                        Button { showPassword.toggle() } label: {
-                            Image(systemName: showPassword ? "eye.slash" : "eye").foregroundColor(.secondary)
+                        Button { submit() } label: {
+                            if busy { ProgressView().tint(.white) } else { Text("Kilidi aç") }
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(PrimaryButtonStyle())
+                        .disabled(busy)
                     }
-                    .font(.title3)
-                }
-
-                Button {
-                    submit()
-                } label: {
-                    if busy { ProgressView().tint(.white) } else { Text("Kilidi aç") }
-                }
-                .buttonStyle(PrimaryButtonStyle())
-                .disabled(busy)
-
-                if store.biometricsEnabled && BiometricKeychain.isAvailable {
-                    Button {
-                        Task { await store.unlockWithBiometrics() }
-                    } label: {
-                        Label("\(BiometricKeychain.displayName) ile aç", systemImage: BiometricKeychain.iconName)
+                    .modifier(ShakeEffect(animatableData: attempts))
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                } else if store.hasMaster {
+                    Button("Ana şifreyle aç") {
+                        withAnimation(.easeInOut(duration: 0.2)) { showPasswordField = true }
+                        focused = true
                     }
-                    .buttonStyle(SecondaryButtonStyle())
+                    .font(.subheadline.weight(.semibold))
                 }
 
-                Text(error ?? " ")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundColor(.kasaDanger)
-                    .multilineTextAlignment(.center)
+                if !store.hasMaster && !canUseDevice {
+                    VStack(spacing: 10) {
+                        Label("Bu iPhone'daki anahtar bulunamadı", systemImage: "exclamationmark.triangle.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.kasaWarn)
+                        Text("Uygulama farklı bir Apple kimliğiyle yüklendiyse veya telefon sıfırlandıysa bu olabilir. Kasayı sıfırlayıp yedeğinizi geri yükleyin.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .card()
+                }
+
+                if let error {
+                    Text(error)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Color.kasaDanger)
+                        .multilineTextAlignment(.center)
+                }
 
                 Spacer()
 
                 HStack(spacing: 24) {
-                    if !store.hint.isEmpty {
+                    if store.hasMaster && !store.hint.isEmpty && passwordVisible {
                         Button { showHint = true } label: { Label("İpucu", systemImage: "lightbulb") }
                     }
-                    Button("Ana şifremi unuttum") { showForgot = true }
-                        .foregroundColor(.secondary)
+                    if passwordVisible || !canUseDevice {
+                        Button(store.hasMaster ? "Şifremi unuttum" : "Kasayı sıfırla") { showForgot = true }
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .font(.subheadline.weight(.semibold))
                 .padding(.bottom, 12)
             }
-            .padding(.horizontal, 22)
+            .padding(.horizontal, 24)
             .frame(maxWidth: 480)
-            .modifier(ShakeEffect(animatableData: attempts))
         }
-        .task {
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            if store.biometricsEnabled {
-                await store.unlockWithBiometrics()
-            } else {
-                focused = true
-            }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 2.4).repeatForever(autoreverses: true)) { glow = true }
+            if scenePhase == .active { store.autoUnlockIfPossible() }
+            if !canUseDevice && store.hasMaster { focused = true }
         }
         .alert("İpucu", isPresented: $showHint) {
             Button("Tamam", role: .cancel) {}
         } message: { Text(store.hint) }
-        .alert("Ana şifremi unuttum", isPresented: $showForgot) {
+        .alert(store.hasMaster ? "Şifremi unuttum" : "Kasayı sıfırla", isPresented: $showForgot) {
             Button("Vazgeç", role: .cancel) {}
             Button("Kasayı sıfırla", role: .destructive) { resetText = ""; showResetConfirm = true }
         } message: {
-            Text("Ana şifre hiçbir yerde saklanmaz, bu yüzden kurtarılamaz. Kasayı sıfırlayıp yeniden oluşturabilir, elinizde varsa bir yedeği o yedeğin şifresiyle geri yükleyebilirsiniz.")
+            Text("Şifreler kurtarılamaz. Kasayı sıfırlayıp yeniden oluşturabilir, elinizde varsa yedeği geri yükleyebilirsiniz.")
         }
         .alert("Emin misiniz?", isPresented: $showResetConfirm) {
             TextField("SİL", text: $resetText)
@@ -264,9 +366,9 @@ struct LockView: View {
             Button("Sıfırla", role: .destructive) {
                 if resetText.trimmingCharacters(in: .whitespaces).uppercased(with: Locale(identifier: "tr_TR")) == "SİL" {
                     store.wipe()
-                    store.showToast("Kasa sıfırlandı")
+                    Toaster.shared.show("Kasa sıfırlandı")
                 } else {
-                    store.showToast("Onay metni hatalı, silinmedi", isError: true)
+                    Toaster.shared.show("Onay metni hatalı, silinmedi", isError: true)
                 }
             }
         } message: {
@@ -297,7 +399,7 @@ struct LockView: View {
                 if wait > 0 {
                     self.error = "Hatalı şifre. Güvenlik için \(Int(wait.rounded(.up))) sn beklemelisiniz."
                 } else {
-                    self.error = store.failCount >= 3 ? "Hatalı ana şifre (\(store.failCount). deneme)" : "Hatalı ana şifre"
+                    self.error = store.failCount >= 3 ? "Hatalı şifre (\(store.failCount). deneme)" : "Hatalı şifre"
                 }
                 focused = true
             }
