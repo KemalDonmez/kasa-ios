@@ -34,6 +34,14 @@ struct SettingsView: View {
             Form {
                 headerSection
                 lockSection
+                Section("Düzen") {
+                    NavigationLink {
+                        FoldersSettingsView()
+                    } label: {
+                        rowLabel("folder.fill", [Color(hex: 0x6366F1), Color(hex: 0x4338CA)], "Klasörler",
+                                 store.folders.isEmpty ? "Şifreleri kişilere göre ayırın" : "\(store.folders.count) klasör")
+                    }
+                }
                 Section("Pano") {
                     Picker(selection: $clipboard) {
                         Text("15 saniye").tag(15)

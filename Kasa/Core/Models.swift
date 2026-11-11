@@ -96,6 +96,7 @@ struct Entry: Codable, Identifiable, Hashable {
     var updatedAt: Double
     var pwChangedAt: Double
     var history: [PasswordHistoryItem]
+    var folderID: String?
 
     init(id: String = UUID().uuidString,
          title: String = "",
@@ -109,7 +110,8 @@ struct Entry: Codable, Identifiable, Hashable {
          createdAt: Double = Entry.nowMs(),
          updatedAt: Double = Entry.nowMs(),
          pwChangedAt: Double = Entry.nowMs(),
-         history: [PasswordHistoryItem] = []) {
+         history: [PasswordHistoryItem] = [],
+         folderID: String? = nil) {
         self.id = id
         self.title = title
         self.username = username
@@ -123,10 +125,11 @@ struct Entry: Codable, Identifiable, Hashable {
         self.updatedAt = updatedAt
         self.pwChangedAt = pwChangedAt
         self.history = history
+        self.folderID = folderID
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, title, username, password, url, notes, totp, category, favorite, createdAt, updatedAt, pwChangedAt, history
+        case id, title, username, password, url, notes, totp, category, favorite, createdAt, updatedAt, pwChangedAt, history, folderID
     }
 
     init(from decoder: Decoder) throws {
@@ -146,6 +149,7 @@ struct Entry: Codable, Identifiable, Hashable {
         updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? createdAt
         pwChangedAt = (try? c.decode(Double.self, forKey: .pwChangedAt)) ?? createdAt
         history = (try? c.decode([PasswordHistoryItem].self, forKey: .history)) ?? []
+        folderID = try? c.decodeIfPresent(String.self, forKey: .folderID)
         if title.trimmingCharacters(in: .whitespaces).isEmpty { title = "Adsız" }
     }
 
@@ -173,19 +177,70 @@ struct Entry: Codable, Identifiable, Hashable {
 /// Şifrelenmiş olarak saklanan içerik
 struct VaultData: Codable {
     var entries: [Entry] = []
+    var folders: [Folder] = []
     var lastBackup: Double = 0
 
-    enum CodingKeys: String, CodingKey { case entries, lastBackup }
+    enum CodingKeys: String, CodingKey { case entries, folders, lastBackup }
 
-    init(entries: [Entry] = [], lastBackup: Double = 0) {
+    init(entries: [Entry] = [], folders: [Folder] = [], lastBackup: Double = 0) {
         self.entries = entries
+        self.folders = folders
         self.lastBackup = lastBackup
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         entries = (try? c.decode([Entry].self, forKey: .entries)) ?? []
+        folders = (try? c.decode([Folder].self, forKey: .folders)) ?? []
         lastBackup = (try? c.decode(Double.self, forKey: .lastBackup)) ?? 0
+    }
+}
+
+/// Kişiye veya amaca göre klasör (ör. Kemal, Babam, Ali)
+struct Folder: Codable, Identifiable, Hashable {
+    var id: String
+    var name: String
+    var icon: String       // "letter" = baş harf
+    var color: Int
+    var createdAt: Double
+
+    init(id: String = UUID().uuidString, name: String, icon: String = "letter", color: Int = 0, createdAt: Double = Entry.nowMs()) {
+        self.id = id
+        self.name = name
+        self.icon = icon
+        self.color = color
+        self.createdAt = createdAt
+    }
+
+    enum CodingKeys: String, CodingKey { case id, name, icon, color, createdAt }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
+        name = (try? c.decode(String.self, forKey: .name)) ?? "Klasör"
+        icon = (try? c.decode(String.self, forKey: .icon)) ?? "letter"
+        color = (try? c.decode(Int.self, forKey: .color)) ?? 0
+        createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? Entry.nowMs()
+    }
+
+    static let colorChoices: [[UInt32]] = [
+        [0x6366F1, 0x4338CA], [0x0EA5E9, 0x0369A1], [0x10B981, 0x047857], [0xF59E0B, 0xD97706],
+        [0xF43F5E, 0xBE123C], [0xA855F7, 0x7E22CE], [0x14B8A6, 0x0F766E], [0x64748B, 0x334155],
+    ]
+
+    static let iconChoices: [String] = [
+        "letter", "person.fill", "person.2.fill", "figure.2.and.child.holdinghands", "house.fill", "briefcase.fill",
+        "heart.fill", "star.fill", "graduationcap.fill", "gamecontroller.fill", "building.2.fill", "cart.fill",
+    ]
+
+    var colors: [Color] {
+        let pair = Folder.colorChoices[((color % Folder.colorChoices.count) + Folder.colorChoices.count) % Folder.colorChoices.count]
+        return pair.map { Color(hex: $0) }
+    }
+
+    var initial: String {
+        guard let f = name.trimmingCharacters(in: .whitespaces).first else { return "?" }
+        return String(f).uppercased(with: Locale(identifier: "tr_TR"))
     }
 }
 
@@ -219,18 +274,21 @@ struct BackupRecord: Codable {
 
 struct BackupPayload: Codable {
     var entries: [Entry]
+    var folders: [Folder]
     var createdAt: Double
 
-    enum CodingKeys: String, CodingKey { case entries, createdAt }
+    enum CodingKeys: String, CodingKey { case entries, folders, createdAt }
 
-    init(entries: [Entry], createdAt: Double) {
+    init(entries: [Entry], folders: [Folder], createdAt: Double) {
         self.entries = entries
+        self.folders = folders
         self.createdAt = createdAt
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         entries = (try? c.decode([Entry].self, forKey: .entries)) ?? []
+        folders = (try? c.decode([Folder].self, forKey: .folders)) ?? []
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? Entry.nowMs()
     }
 }
@@ -240,6 +298,7 @@ enum Prefs {
     static let theme = "pref.theme"                 // 0 sistem, 1 koyu, 2 açık
     static let palette = "pref.palette"             // renk teması
     static let siteIcons = "pref.siteIcons"         // site simgelerini indir
+    static let defaultFolder = "pref.defaultFolder" // yeni kayıtların varsayılan klasörü
     static let migratedGames = "migrate.oyun.v1"
     static let legacyBiometrics = "pref.biometrics" // eski sürüm
     static let deviceUnlock = "pref.deviceUnlock"   // Face ID / iPhone parolası ile açma
@@ -260,6 +319,7 @@ enum Prefs {
             theme: 0,
             palette: "gece",
             siteIcons: true,
+            defaultFolder: "",
             migratedGames: false,
             legacyBiometrics: false,
             deviceUnlock: false,

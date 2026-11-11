@@ -23,6 +23,7 @@ final class VaultStore: ObservableObject {
 
     @Published private(set) var phase: Phase = .loading
     @Published private(set) var entries: [Entry] = []
+    @Published private(set) var folders: [Folder] = []
     @Published private(set) var report = Report()
     @Published private(set) var lastBackup: Double = 0
     @Published private(set) var hasMaster = false
@@ -62,7 +63,7 @@ final class VaultStore: ObservableObject {
     private func persist() {
         guard var f = file, let key = vaultKey else { return }
         do {
-            let payload = try JSONEncoder().encode(VaultData(entries: entries, lastBackup: lastBackup))
+            let payload = try JSONEncoder().encode(VaultData(entries: entries, folders: folders, lastBackup: lastBackup))
             f.data = try KasaCrypto.seal(payload, key: key).base64
             f.v = 2
             file = f
@@ -118,12 +119,14 @@ final class VaultStore: ObservableObject {
         guard let f = file else { throw KasaError.corrupt }
         if f.data.isEmpty {
             entries = []
+            folders = []
             lastBackup = 0
         } else {
             guard let blob = Data(base64Encoded: f.data) else { throw KasaError.corrupt }
             let json = try KasaCrypto.open(blob, key: key)
             let vault = try JSONDecoder().decode(VaultData.self, from: json)
             entries = vault.entries
+            folders = vault.folders
             lastBackup = vault.lastBackup
         }
         vaultKey = key
@@ -158,7 +161,7 @@ final class VaultStore: ObservableObject {
     // MARK: - Kurulum
 
     /// Yeni kasa oluşturur. Cihaz kilidi (Face ID / parola) varsa onunla korunur; ana şifre isteğe bağlıdır.
-    func createVault(masterPassword: String?, hint: String, entries initial: [Entry] = []) async throws {
+    func createVault(masterPassword: String?, hint: String, entries initial: [Entry] = [], folders initialFolders: [Folder] = []) async throws {
         let useDevice = DeviceAuth.isAvailable
         guard useDevice || (masterPassword?.isEmpty == false) else { throw KasaError.deviceAuthUnavailable }
         let vk = SymmetricKey(size: .bits256)
@@ -179,6 +182,7 @@ final class VaultStore: ObservableObject {
         deviceKeyMissing = false
         vaultKey = vk
         entries = initial
+        folders = initialFolders
         lastBackup = 0
         resetFails()
         entriesChanged()
@@ -300,6 +304,7 @@ final class VaultStore: ObservableObject {
     func lock() {
         vaultKey = nil
         entries = []
+        folders = []
         report = Report()
         strengthCache.removeAll()
         Toaster.shared.busy = nil
@@ -405,8 +410,10 @@ final class VaultStore: ObservableObject {
         hasMaster = false
         deviceKeyMissing = false
         entries = []
+        folders = []
         report = Report()
         lastBackup = 0
+        UserDefaults.standard.set("", forKey: Prefs.defaultFolder)
         phase = .setup
     }
 
@@ -455,6 +462,72 @@ final class VaultStore: ObservableObject {
         })
     }
 
+    // MARK: - Klasörler
+
+    func folder(_ id: String?) -> Folder? {
+        guard let id else { return nil }
+        return folders.first { $0.id == id }
+    }
+
+    func count(inFolder id: String?) -> Int {
+        entries.filter { $0.folderID == id }.count
+    }
+
+    /// Varsayılan klasör (yoksa nil)
+    var defaultFolderID: String? {
+        let id = UserDefaults.standard.string(forKey: Prefs.defaultFolder) ?? ""
+        return folders.contains(where: { $0.id == id }) ? id : nil
+    }
+
+    func setDefaultFolder(_ id: String?) {
+        UserDefaults.standard.set(id ?? "", forKey: Prefs.defaultFolder)
+        objectWillChange.send()
+    }
+
+    @discardableResult
+    func addFolder(name: String, icon: String, color: Int) -> Folder {
+        let f = Folder(name: name.trimmingCharacters(in: .whitespacesAndNewlines), icon: icon, color: color)
+        folders.append(f)
+        if folders.count == 1 && defaultFolderID == nil { setDefaultFolder(f.id) }
+        persist()
+        return f
+    }
+
+    func updateFolder(_ f: Folder) {
+        guard let i = folders.firstIndex(where: { $0.id == f.id }) else { return }
+        folders[i] = f
+        persist()
+    }
+
+    /// Klasörü siler. İçindeki şifreler ya klasörsüz bırakılır ya da silinir.
+    func deleteFolder(_ id: String, deleteEntries: Bool) {
+        folders.removeAll { $0.id == id }
+        if deleteEntries {
+            entries.removeAll { $0.folderID == id }
+        } else {
+            for i in entries.indices where entries[i].folderID == id { entries[i].folderID = nil }
+        }
+        if UserDefaults.standard.string(forKey: Prefs.defaultFolder) == id { setDefaultFolder(nil) }
+        entriesChanged()
+    }
+
+    func move(_ entryID: String, to folderID: String?) {
+        guard let i = entries.firstIndex(where: { $0.id == entryID }) else { return }
+        entries[i].folderID = folderID
+        persist()
+        Haptics.tap()
+        Toaster.shared.show(folderID == nil ? "Klasörden çıkarıldı" : "“\(folder(folderID)?.name ?? "")” klasörüne taşındı")
+    }
+
+    private func folderForImport(named name: String) -> Folder {
+        if let f = folders.first(where: { $0.name.lowercased(with: Locale(identifier: "tr_TR")) == name.lowercased(with: Locale(identifier: "tr_TR")) }) {
+            return f
+        }
+        let f = Folder(name: name, icon: "letter", color: folders.count % Folder.colorChoices.count)
+        folders.append(f)
+        return f
+    }
+
     // MARK: - Yedekleme
 
     /// Yedek dosyası oluşturur. Ana şifre varsa onu doğrular; yoksa verilen şifre yedek şifresi olur.
@@ -465,7 +538,7 @@ final class VaultStore: ObservableObject {
         let salt = KasaCrypto.randomBytes(16)
         let key = await KasaCrypto.deriveKeyAsync(password: password, salt: salt, iterations: KasaCrypto.iterations)
         let now = Entry.nowMs()
-        let payload = try JSONEncoder().encode(BackupPayload(entries: entries, createdAt: now))
+        let payload = try JSONEncoder().encode(BackupPayload(entries: entries, folders: folders, createdAt: now))
         let sealed = try KasaCrypto.sealWebFormat(payload, key: key)
         let record = BackupRecord(app: "kasa", v: 1, kdf: "PBKDF2-SHA256", iter: KasaCrypto.iterations, salt: salt.base64,
                                   hint: hint, iv: sealed.iv.base64, ct: sealed.ct.base64, createdAt: now, updatedAt: now)
@@ -476,7 +549,7 @@ final class VaultStore: ObservableObject {
         return url
     }
 
-    nonisolated static func readBackup(data: Data, password: String) async throws -> (entries: [Entry], hint: String) {
+    nonisolated static func readBackup(data: Data, password: String) async throws -> (entries: [Entry], folders: [Folder], hint: String) {
         guard let rec = try? JSONDecoder().decode(BackupRecord.self, from: data), rec.app == "kasa",
               let salt = Data(base64Encoded: rec.salt), let iv = Data(base64Encoded: rec.iv), let ct = Data(base64Encoded: rec.ct) else {
             throw KasaError.invalidBackup
@@ -484,12 +557,15 @@ final class VaultStore: ObservableObject {
         let key = await KasaCrypto.deriveKeyAsync(password: password, salt: salt, iterations: rec.iter ?? KasaCrypto.iterations)
         guard let json = try? KasaCrypto.openWebFormat(iv: iv, ct: ct, key: key) else { throw KasaError.wrongPassword }
         guard let payload = try? JSONDecoder().decode(BackupPayload.self, from: json) else { throw KasaError.corrupt }
-        return (payload.entries, rec.hint ?? "")
+        return (payload.entries, payload.folders, rec.hint ?? "")
     }
 
     func mergeBackup(data: Data, password: String) async throws -> (added: Int, updated: Int) {
         let result = try await VaultStore.readBackup(data: data, password: password)
         var added = 0, updated = 0
+        for f in result.folders where !folders.contains(where: { $0.id == f.id }) {
+            folders.append(f)
+        }
         for e in result.entries {
             if let i = entries.firstIndex(where: { $0.id == e.id }) {
                 if e.updatedAt > entries[i].updatedAt { entries[i] = e; updated += 1 }
@@ -504,7 +580,7 @@ final class VaultStore: ObservableObject {
     /// Boş cihazda yedekten yeni kasa oluşturur (yedeğin şifresi ana şifre olur)
     func restoreBackup(data: Data, password: String) async throws -> Int {
         let result = try await VaultStore.readBackup(data: data, password: password)
-        try await createVault(masterPassword: password, hint: result.hint, entries: result.entries)
+        try await createVault(masterPassword: password, hint: result.hint, entries: result.entries, folders: result.folders)
         return result.entries.count
     }
 
@@ -527,6 +603,7 @@ final class VaultStore: ObservableObject {
         let cTotp = col(["otpauth", "totp", "login_totp", "otp"])
         let cType = col(["type"])
         let cFav = col(["favorite"])
+        let cFolder = col(["folder", "klasör", "klasor", "grouping"])
 
         var seen = Set(entries.map { "\($0.title)\u{1}\($0.username)\u{1}\($0.password)" })
         var added = 0, skipped = 0
@@ -550,10 +627,12 @@ final class VaultStore: ObservableObject {
             var totp = g(cTotp)
             if !totp.isEmpty && TOTP.parse(totp) == nil { totp = "" }
             let fav = g(cFav).lowercased()
+            let folderName = g(cFolder)
+            let folderID = folderName.isEmpty ? nil : folderForImport(named: folderName).id
             entries.append(Entry(title: title, username: username, password: password, url: url, notes: g(cNotes), totp: totp,
                                  category: CategoryGuess.guess(title: title, url: url) ?? .genel,
                                  favorite: fav == "1" || fav == "true",
-                                 createdAt: now, updatedAt: now, pwChangedAt: now))
+                                 createdAt: now, updatedAt: now, pwChangedAt: now, folderID: folderID))
             added += 1
         }
         entriesChanged()
@@ -561,9 +640,10 @@ final class VaultStore: ObservableObject {
     }
 
     func exportCSV() throws -> URL {
-        var lines = ["Title,URL,Username,Password,Notes,OTPAuth"]
+        var lines = ["Title,URL,Username,Password,Notes,OTPAuth,Folder"]
         for e in entries {
-            lines.append([e.title, e.url, e.username, e.password, e.notes, TOTP.uri(for: e)].map(CSV.escape).joined(separator: ","))
+            let folderName = folder(e.folderID)?.name ?? ""
+            lines.append([e.title, e.url, e.username, e.password, e.notes, TOTP.uri(for: e), folderName].map(CSV.escape).joined(separator: ","))
         }
         let text = "\u{FEFF}" + lines.joined(separator: "\r\n")
         return try ShareHelper.writeTemp(name: "sifrelerim-\(DateText.stamp()).csv", data: Data(text.utf8))

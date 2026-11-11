@@ -27,6 +27,7 @@ struct EntryDetailView: View {
                 hero(e)
                 quickActions(e)
                 fieldsCard(e)
+                folderCard(e)
                 if !e.notes.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         Label("Notlar", systemImage: "note.text").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
@@ -87,8 +88,9 @@ struct EntryDetailView: View {
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
                 HStack(spacing: 8) {
+                    if let f = store.folder(e.folderID) { Pill(text: f.name, icon: "folder.fill") }
                     Pill(text: e.category.name, icon: e.category.icon)
-                    if !e.host.isEmpty { Pill(text: e.host, icon: "globe") }
+                    if !e.host.isEmpty && store.folder(e.folderID) == nil { Pill(text: e.host, icon: "globe") }
                 }
             }
             .padding(.vertical, 26)
@@ -238,6 +240,41 @@ struct EntryDetailView: View {
     }
 
     @ViewBuilder
+    private func folderCard(_ e: Entry) -> some View {
+        let current = store.folder(e.folderID)
+        if !store.folders.isEmpty {
+        Menu {
+            ForEach(store.folders) { f in
+                Button { store.move(e.id, to: f.id) } label: {
+                    Label(f.name, systemImage: e.folderID == f.id ? "checkmark" : "folder")
+                }
+            }
+            Button { store.move(e.id, to: nil) } label: {
+                Label("Klasörsüz", systemImage: current == nil ? "checkmark" : "tray")
+            }
+        } label: {
+            HStack(spacing: 14) {
+                if let current {
+                    FolderAvatar(folder: current, size: 32)
+                } else {
+                    IconBadge(systemName: "tray.fill", colors: [Color(hex: 0x9A9AB0), Color(hex: 0x6E6E86)], size: 32)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Klasör").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(current?.name ?? "Klasörsüz").font(.body.weight(.semibold)).foregroundStyle(.primary)
+                }
+                Spacer()
+                Text("Değiştir")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.kasaAccent)
+                Image(systemName: "chevron.up.chevron.down").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
+            }
+            .card(padding: 14)
+        }
+        }
+    }
+
+    @ViewBuilder
     private func siblingsCard(_ e: Entry) -> some View {
         let others = store.siblings(of: e)
         VStack(alignment: .leading, spacing: 4) {
@@ -247,7 +284,9 @@ struct EntryDetailView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button {
-                    editing = EditTarget(entry: nil, template: Entry(title: e.title, url: e.url, category: e.category))
+                    var t = Entry(title: e.title, url: e.url, category: e.category)
+                    t.folderID = e.folderID
+                    editing = EditTarget(entry: nil, template: t)
                 } label: {
                     Label("Hesap ekle", systemImage: "plus.circle.fill").font(.footnote.weight(.semibold))
                 }
@@ -319,6 +358,8 @@ struct EntryEditView: View {
     @State private var category: EntryCategory
     @State private var favorite: Bool
     @State private var categoryTouched: Bool
+    @State private var folderID: String?
+    @State private var folderEditing: FolderEditTarget?
     @State private var showPassword: Bool
     @State private var showAdvanced: Bool
     @State private var confirmDiscard = false
@@ -331,6 +372,7 @@ struct EntryEditView: View {
             base.title = t.title
             base.url = t.url
             base.category = t.category
+            base.folderID = t.folderID
         }
         let e = original ?? base
         _title = State(initialValue: e.title)
@@ -341,6 +383,7 @@ struct EntryEditView: View {
         _notes = State(initialValue: e.notes)
         _category = State(initialValue: e.category)
         _favorite = State(initialValue: e.favorite)
+        _folderID = State(initialValue: e.folderID)
         _categoryTouched = State(initialValue: original != nil || defaultCategory != .genel || template != nil)
         _showPassword = State(initialValue: original == nil)
         _showAdvanced = State(initialValue: !e.totp.isEmpty)
@@ -350,6 +393,7 @@ struct EntryEditView: View {
         let e = original ?? Entry()
         return title != e.title || username != e.username || password != e.password || url != e.url
             || totp != e.totp || notes != e.notes || favorite != e.favorite || (original != nil && category != e.category)
+            || (original != nil && folderID != e.folderID)
     }
 
     private var preview: Entry {
@@ -448,6 +492,36 @@ struct EntryEditView: View {
                     }
                 }
 
+                Section {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(store.folders) { f in
+                                folderChip(f.name, selected: folderID == f.id, colors: f.colors) {
+                                    folderID = f.id
+                                } avatar: { FolderAvatar(folder: f, size: 22) }
+                            }
+                            folderChip("Klasörsüz", selected: folderID == nil || store.folder(folderID) == nil,
+                                       colors: [Color(hex: 0x9A9AB0), Color(hex: 0x6E6E86)]) {
+                                folderID = nil
+                            } avatar: { Image(systemName: "tray.fill").font(.caption.weight(.bold)) }
+                            Button { folderEditing = FolderEditTarget(folder: nil) } label: {
+                                Label("Yeni", systemImage: "plus")
+                                    .font(.subheadline.weight(.semibold))
+                                    .padding(.horizontal, 12)
+                                    .frame(height: 34)
+                                    .foregroundStyle(Color.kasaAccent)
+                                    .overlay(Capsule().strokeBorder(Color.kasaAccent.opacity(0.45), style: StrokeStyle(lineWidth: 1.2, dash: [4, 3])))
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 16)
+                    }
+                    .listRowInsets(EdgeInsets())
+                } header: {
+                    Text("Klasör (kimin şifresi?)")
+                }
+
                 Section("Kategori") {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
@@ -521,6 +595,9 @@ struct EntryEditView: View {
                 }
             }
             .interactiveDismissDisabled(hasChanges)
+            .sheet(item: $folderEditing) { t in
+                FolderEditView(original: t.folder) { f in folderID = f.id }
+            }
             .confirmationDialog("Değişiklikler kaydedilmedi", isPresented: $confirmDiscard, titleVisibility: .visible) {
                 Button("Kaydetmeden çık", role: .destructive) { dismiss() }
                 Button("Düzenlemeye dön", role: .cancel) {}
@@ -534,6 +611,28 @@ struct EntryEditView: View {
                 category = c
             }
         }
+    }
+
+    private func folderChip<A: View>(_ title: String, selected: Bool, colors: [Color], action: @escaping () -> Void,
+                                     @ViewBuilder avatar: () -> A) -> some View {
+        Button {
+            Haptics.tap()
+            action()
+        } label: {
+            HStack(spacing: 6) {
+                avatar()
+                Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
+            }
+            .padding(.leading, 6)
+            .padding(.trailing, 12)
+            .frame(height: 34)
+            .foregroundStyle(selected ? Color.white : Color.primary)
+            .background(
+                Capsule().fill(selected ? AnyShapeStyle(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
+                                        : AnyShapeStyle(Color.primary.opacity(0.06)))
+            )
+        }
+        .buttonStyle(.borderless)
     }
 
     private struct Suggestion {
@@ -611,6 +710,7 @@ struct EntryEditView: View {
         e.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
         e.category = category
         e.favorite = favorite
+        e.folderID = store.folder(folderID) == nil ? nil : folderID
         store.upsert(e)
         Haptics.success()
         Toaster.shared.show(original == nil ? "Şifre kaydedildi" : "Değişiklikler kaydedildi")

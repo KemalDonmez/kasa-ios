@@ -20,8 +20,14 @@ enum VaultFilter: Hashable {
     }
 }
 
+enum FolderScope: Hashable {
+    case all
+    case none
+    case folder(String)
+}
+
 enum SortMode: String, CaseIterable, Identifiable {
-    case az, za, created, updated, category
+    case az, za, created, updated, category, folder
 
     var id: String { rawValue }
 
@@ -32,6 +38,7 @@ enum SortMode: String, CaseIterable, Identifiable {
         case .created: return "Son eklenen"
         case .updated: return "Son değişen"
         case .category: return "Türe göre"
+        case .folder: return "Klasöre göre"
         }
     }
 
@@ -42,6 +49,7 @@ enum SortMode: String, CaseIterable, Identifiable {
         case .created: return "plus.circle"
         case .updated: return "clock.arrow.circlepath"
         case .category: return "square.grid.2x2"
+        case .folder: return "folder"
         }
     }
 
@@ -112,9 +120,30 @@ struct HomeView: View {
     @State private var pendingDelete: Entry?
     @State private var path: [String] = []
     @State private var expanded: Set<String> = []
+    @State private var scope: FolderScope = .all
+    @State private var folderEditing: FolderEditTarget?
 
     private var sort: SortMode { SortMode(stored: sortRaw) }
-    private var isBrowsing: Bool { query.isEmpty && filter == .all }
+    private var isBrowsing: Bool { query.isEmpty && filter == .all && scope == .all }
+
+    private var scopedFolder: Folder? {
+        if case .folder(let id) = scope { return store.folder(id) }
+        return nil
+    }
+
+    /// Yeni kayıt için şablon: açık klasör, yoksa varsayılan klasör
+    private func newTemplate() -> Entry? {
+        let fid: String?
+        switch scope {
+        case .folder(let id): fid = id
+        case .none: fid = nil
+        case .all: fid = store.defaultFolderID
+        }
+        guard let fid else { return nil }
+        var t = Entry(category: defaultCategory)
+        t.folderID = fid
+        return t
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -134,7 +163,7 @@ struct HomeView: View {
                     .accessibilityLabel("Kilitle")
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { editing = EditTarget(entry: nil) } label: {
+                    Button { editing = EditTarget(entry: nil, template: newTemplate()) } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 15, weight: .bold))
                             .foregroundStyle(.white)
@@ -150,6 +179,13 @@ struct HomeView: View {
             .sheet(item: $editing) { target in
                 EntryEditView(original: target.entry, defaultCategory: defaultCategory, template: target.template)
             }
+            .background(
+                Color.clear.sheet(item: $folderEditing) { t in
+                    FolderEditView(original: t.folder) { f in
+                        withAnimation(.easeInOut(duration: 0.2)) { scope = .folder(f.id) }
+                    }
+                }
+            )
             .fileImporter(isPresented: $showImporter, allowedContentTypes: [.commaSeparatedText, .plainText, .data]) { result in
                 if case .success(let url) = result { importCSV(url) }
             }
@@ -175,6 +211,52 @@ struct HomeView: View {
                         .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
+                }
+            }
+
+            Section {
+                FolderStrip(folders: store.folders,
+                            counts: folderCounts(),
+                            total: store.entries.count,
+                            scope: scope,
+                            select: { s in
+                                Haptics.tap()
+                                withAnimation(.easeInOut(duration: 0.2)) { scope = (scope == s && s != .all) ? .all : s }
+                            },
+                            add: { folderEditing = FolderEditTarget(folder: nil) },
+                            edit: { f in folderEditing = FolderEditTarget(folder: f) })
+                    .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            } header: {
+                sectionHeader("Klasörler", icon: "folder.fill")
+            }
+
+            if let f = scopedFolder {
+                Section {
+                    HStack(spacing: 14) {
+                        FolderAvatar(folder: f, size: 50)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(f.name).font(.title3.weight(.bold))
+                            Text("\(store.count(inFolder: f.id)) şifre").font(.subheadline).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button { folderEditing = FolderEditTarget(folder: f) } label: {
+                            Image(systemName: "pencil").font(.system(size: 14, weight: .bold))
+                                .frame(width: 34, height: 34)
+                                .background(Circle().fill(Color.primary.opacity(0.07)))
+                        }
+                        .buttonStyle(.borderless)
+                        Button { withAnimation(.easeInOut(duration: 0.2)) { scope = .all } } label: {
+                            Image(systemName: "xmark").font(.system(size: 13, weight: .bold))
+                                .frame(width: 34, height: 34)
+                                .background(Circle().fill(Color.primary.opacity(0.07)))
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    .foregroundStyle(.primary)
+                    .padding(.vertical, 4)
+                    .listRowBackground(Color.surface)
                 }
             }
 
@@ -269,7 +351,7 @@ struct HomeView: View {
 
     private func row(_ e: Entry, inGroup: Bool = false) -> some View {
         NavigationLink(value: e.id) {
-            EntryRowView(entry: e, inGroup: inGroup).equatable()
+            EntryRowView(entry: e, inGroup: inGroup, folder: scope == .all ? store.folder(e.folderID) : nil).equatable()
         }
         .listRowBackground(Color.surface)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -305,6 +387,18 @@ struct HomeView: View {
             Button { store.toggleFavorite(e.id) } label: {
                 Label(e.favorite ? "Favorilerden çıkar" : "Favorilere ekle", systemImage: e.favorite ? "star.slash" : "star")
             }
+            if !store.folders.isEmpty {
+                Menu {
+                    ForEach(store.folders) { f in
+                        Button { store.move(e.id, to: f.id) } label: {
+                            Label(f.name, systemImage: e.folderID == f.id ? "checkmark" : "folder")
+                        }
+                    }
+                    Button { store.move(e.id, to: nil) } label: { Label("Klasörsüz", systemImage: "tray") }
+                } label: {
+                    Label("Klasöre taşı", systemImage: "folder")
+                }
+            }
             Button { editing = EditTarget(entry: e) } label: { Label("Düzenle", systemImage: "pencil") }
             Button(role: .destructive) { pendingDelete = e } label: { Label("Sil", systemImage: "trash") }
         }
@@ -325,7 +419,7 @@ struct HomeView: View {
                 }
             }
             chipScroller {
-                Chip(title: "Tümü", count: store.entries.count, selected: filter == .all) { setFilter(.all) }
+                Chip(title: "Tümü", count: store.entries.filter { inScope($0) }.count, selected: filter == .all) { setFilter(.all) }
                 if counts.fav > 0 {
                     Chip(title: "Favoriler", icon: "star.fill", count: counts.fav, selected: filter == .favorites,
                          tint: .kasaWarn) { setFilter(.favorites) }
@@ -368,10 +462,27 @@ struct HomeView: View {
         withAnimation(.easeInOut(duration: 0.2)) { filter = (filter == f && f != .all) ? .all : f }
     }
 
+    private func inScope(_ e: Entry) -> Bool {
+        switch scope {
+        case .all: return true
+        case .none: return e.folderID == nil || store.folder(e.folderID) == nil
+        case .folder(let id): return e.folderID == id
+        }
+    }
+
+    private func folderCounts() -> [String: Int] {
+        var counts: [String: Int] = [:]
+        let valid = Set(store.folders.map(\.id))
+        for e in store.entries {
+            if let id = e.folderID, valid.contains(id) { counts[id, default: 0] += 1 } else { counts["", default: 0] += 1 }
+        }
+        return counts
+    }
+
     private func filterCounts() -> (fav: Int, twoFA: Int, categories: [EntryCategory: Int]) {
         var fav = 0, twoFA = 0
         var cats: [EntryCategory: Int] = [:]
-        for e in store.entries {
+        for e in store.entries where inScope(e) {
             if e.favorite { fav += 1 }
             if !e.totp.isEmpty { twoFA += 1 }
             cats[e.category, default: 0] += 1
@@ -386,6 +497,11 @@ struct HomeView: View {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased(with: locale)
         let weakIDs: Set<String> = filter == .weak ? Set(store.report.weak.map(\.id)) : []
         return store.entries.filter { e in
+            switch scope {
+            case .all: break
+            case .none: if e.folderID != nil && store.folder(e.folderID) != nil { return false }
+            case .folder(let id): if e.folderID != id { return false }
+            }
             switch filter {
             case .all: break
             case .favorites: if !e.favorite { return false }
@@ -468,6 +584,19 @@ struct HomeView: View {
                 }
             }
             return result
+        case .folder:
+            var result: [ListSection] = []
+            for f in store.folders {
+                let inFolder = list.filter { $0.folderID == f.id }
+                if inFolder.isEmpty { continue }
+                result.append(ListSection(id: "f:" + f.id, title: f.name, icon: "folder.fill", items: groupedItems(inFolder).sorted(by: byName)))
+            }
+            let valid = Set(store.folders.map(\.id))
+            let unfiled = list.filter { $0.folderID == nil || !valid.contains($0.folderID ?? "") }
+            if !unfiled.isEmpty {
+                result.append(ListSection(id: "f:none", title: "Klasörsüz", icon: "tray", items: groupedItems(unfiled).sorted(by: byName)))
+            }
+            return result
         case .category:
             var result: [ListSection] = []
             for c in EntryCategory.allCases {
@@ -503,7 +632,7 @@ struct HomeView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 12)
-                Button { editing = EditTarget(entry: nil) } label: { Label("Şifre ekle", systemImage: "plus") }
+                Button { editing = EditTarget(entry: nil, template: newTemplate()) } label: { Label("Şifre ekle", systemImage: "plus") }
                     .buttonStyle(PrimaryButtonStyle())
                 Button { showImporter = true } label: { Label("Başka uygulamadan aktar (CSV)", systemImage: "square.and.arrow.down") }
                     .buttonStyle(SecondaryButtonStyle())
@@ -546,8 +675,11 @@ enum DateBucket {
 struct EntryRowView: View, Equatable {
     let entry: Entry
     var inGroup = false
+    var folder: Folder? = nil
 
-    static func == (lhs: EntryRowView, rhs: EntryRowView) -> Bool { lhs.entry == rhs.entry && lhs.inGroup == rhs.inGroup }
+    static func == (lhs: EntryRowView, rhs: EntryRowView) -> Bool {
+        lhs.entry == rhs.entry && lhs.inGroup == rhs.inGroup && lhs.folder == rhs.folder
+    }
 
     private var mainText: String {
         inGroup && !entry.username.isEmpty ? entry.username : entry.title
@@ -586,7 +718,19 @@ struct EntryRowView: View, Equatable {
                             .background(Capsule().fill(Color.kasaAccent.opacity(0.14)))
                     }
                 }
-                Text(subText).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                HStack(spacing: 6) {
+                    if let folder {
+                        HStack(spacing: 4) {
+                            Circle().fill(LinearGradient(colors: folder.colors, startPoint: .top, endPoint: .bottom)).frame(width: 7, height: 7)
+                            Text(folder.name).font(.caption.weight(.semibold)).lineLimit(1)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(folder.colors[0].opacity(0.14)))
+                        .foregroundStyle(folder.colors[0])
+                    }
+                    Text(subText).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
             }
             Spacer(minLength: 4)
             if !entry.password.isEmpty {
@@ -730,6 +874,72 @@ struct FavoritesStrip: View {
                     .buttonStyle(.borderless)
                     .foregroundStyle(.primary)
                 }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 2)
+        }
+    }
+}
+
+/// Ana ekrandaki klasör şeridi
+struct FolderStrip: View {
+    let folders: [Folder]
+    let counts: [String: Int]
+    let total: Int
+    let scope: FolderScope
+    let select: (FolderScope) -> Void
+    let add: () -> Void
+    let edit: (Folder) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                Button { select(.all) } label: {
+                    FolderCard(title: "Tümü", count: total, selected: scope == .all,
+                               avatar: AnyView(IconBadge(systemName: "square.stack.fill", colors: Theme.palette.gradientColors, size: 36)))
+                }
+                .buttonStyle(.borderless)
+
+                ForEach(folders) { f in
+                    Button { select(.folder(f.id)) } label: {
+                        FolderCard(title: f.name, count: counts[f.id] ?? 0, selected: scope == .folder(f.id),
+                                   avatar: AnyView(FolderAvatar(folder: f, size: 36)))
+                    }
+                    .buttonStyle(.borderless)
+                    .contextMenu {
+                        Button { edit(f) } label: { Label("Düzenle", systemImage: "pencil") }
+                    }
+                }
+
+                if !folders.isEmpty, let unfiled = counts[""], unfiled > 0 {
+                    Button { select(.none) } label: {
+                        FolderCard(title: "Klasörsüz", count: unfiled, selected: scope == .none,
+                                   avatar: AnyView(IconBadge(systemName: "tray.fill", colors: [Color(hex: 0x9A9AB0), Color(hex: 0x6E6E86)], size: 36)))
+                    }
+                    .buttonStyle(.borderless)
+                }
+
+                Button(action: add) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(Color.kasaAccent)
+                            .frame(width: 36, height: 36)
+                            .background(Circle().fill(Color.kasaAccent.opacity(0.12)))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Yeni klasör").font(.subheadline.weight(.semibold))
+                            Text(folders.isEmpty ? "ör. Kemal, Babam" : "Kişi veya grup").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(width: 104, alignment: .leading)
+                    .padding(12)
+                    .foregroundStyle(.primary)
+                    .background(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .strokeBorder(Color.kasaAccent.opacity(0.4), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                    )
+                }
+                .buttonStyle(.borderless)
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 2)
